@@ -58,6 +58,43 @@ npm run dev
 
 ## API
 
+### `POST /api/template-paragraphs`
+Body:
+- `role`
+
+Behavior:
+- Loads a `.docx` template based on role
+- Extracts text from `Dear Hiring Team,` to `Thank you for your time and consideration.`
+- Returns first 5 paragraphs as `paragraph1..paragraph5`
+
+Template resolution order:
+1. Role-specific env var (examples below)
+2. `templates/<role_slug>.docx`
+3. `templates/<role_slug>_cover_letter.docx`
+4. `templates/<role_slug>_template.docx`
+5. `<role_slug>.docx`
+6. `Uranbileg_CLetter.docx`
+
+Useful env vars:
+- `TEMPLATE_ROOT`
+- `TEMPLATE_SOFTWARE_ENGINEERING_INTERN`
+- `TEMPLATE_SOFTWARE_ENGINEER`
+- `TEMPLATE_DATA_ENGINEER`
+- `TEMPLATE_DATA_ENGINEERING_INTERN`
+- `TEMPLATE_AI_ENGINEER`
+- `TEMPLATE_AI_ENGINEER_INTERN`
+- `TEMPLATE_ERP_CONSULTANT`
+- `TEMPLATE_ERP_CONSULATNT_INTENEER`
+- `TEMPLATE_SOLUTION_ENGINEER`
+
+### `POST /api/improve-paragraphs`
+Uses template paragraphs + company info + responsibilities + qualifications to generate:
+- `improvedParagraph1`
+- `improvedParagraph2`
+- `improvedParagraph3`
+- `improvedParagraph4` (must include company-specific info and company name)
+- `improvedParagraph5`
+
 ### `POST /api/extract-job-fields`
 Provide at least one of these links:
 - `officialJobLink`

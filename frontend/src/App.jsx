@@ -25,6 +25,12 @@ const initialForm = {
   jobTitle: "",
   location: "",
   companyInformation: "",
+  improvementPrompt: "",
+  improvedParagraph1: "",
+  improvedParagraph2: "",
+  improvedParagraph3: "",
+  improvedParagraph4: "",
+  improvedParagraph5: "",
   paragraph1: "",
   paragraph2: "",
   paragraph3: "",
@@ -39,6 +45,8 @@ export default function App() {
   const [letter, setLetter] = useState("");
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  const [loadingTemplate, setLoadingTemplate] = useState(false);
+  const [improving, setImproving] = useState(false);
   const [error, setError] = useState("");
 
   const isDisabled = useMemo(
@@ -98,12 +106,48 @@ export default function App() {
         jobTitle: extracted.jobTitle || prev.jobTitle,
         location: extracted.location || prev.location,
         responsibilities: extracted.responsibilities || prev.responsibilities,
-        qualifications: extracted.qualifications || prev.qualifications
+        qualifications: extracted.qualifications || prev.qualifications,
+        companyInformation: extracted.companyInformation || prev.companyInformation,
+        companyWebsiteLink: extracted.companyWebsiteLink || prev.companyWebsiteLink
       }));
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setExtracting(false);
+    }
+  };
+
+  const loadParagraphsFromTemplate = async () => {
+    setLoadingTemplate(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/template-paragraphs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: form.role })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load template paragraphs.");
+      }
+
+      const paragraphs = data.paragraphs || {};
+
+      setForm((prev) => ({
+        ...prev,
+        paragraph1: paragraphs.paragraph1 || prev.paragraph1,
+        paragraph2: paragraphs.paragraph2 || prev.paragraph2,
+        paragraph3: paragraphs.paragraph3 || prev.paragraph3,
+        paragraph4: paragraphs.paragraph4 || prev.paragraph4,
+        paragraph5: paragraphs.paragraph5 || prev.paragraph5
+      }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingTemplate(false);
     }
   };
 
@@ -113,10 +157,51 @@ export default function App() {
     setError("");
 
     try {
+      let payload = { ...form };
+      const improvedEmpty = [
+        payload.improvedParagraph1,
+        payload.improvedParagraph2,
+        payload.improvedParagraph3,
+        payload.improvedParagraph4,
+        payload.improvedParagraph5
+      ].every((p) => !String(p || "").trim());
+
+      if (improvedEmpty) {
+        const improveResponse = await fetch(`${API_BASE_URL}/api/improve-paragraphs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const improveData = await improveResponse.json();
+        if (!improveResponse.ok) {
+          throw new Error(improveData.error || "Failed to improve template paragraphs.");
+        }
+
+        const improved = improveData.improved || {};
+        payload = {
+          ...payload,
+          improvedParagraph1: improved.improvedParagraph1 || "",
+          improvedParagraph2: improved.improvedParagraph2 || "",
+          improvedParagraph3: improved.improvedParagraph3 || "",
+          improvedParagraph4: improved.improvedParagraph4 || "",
+          improvedParagraph5: improved.improvedParagraph5 || ""
+        };
+
+        setForm((prev) => ({
+          ...prev,
+          improvedParagraph1: payload.improvedParagraph1,
+          improvedParagraph2: payload.improvedParagraph2,
+          improvedParagraph3: payload.improvedParagraph3,
+          improvedParagraph4: payload.improvedParagraph4,
+          improvedParagraph5: payload.improvedParagraph5
+        }));
+      }
+
       const response = await fetch(`${API_BASE_URL}/api/generate-cover-letter`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form)
+        body: JSON.stringify(payload)
       });
 
       const data = await response.json();
@@ -130,6 +215,38 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const generateImprovedParagraphs = async () => {
+    setImproving(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/improve-paragraphs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to improve template paragraphs.");
+      }
+
+      const improved = data.improved || {};
+      setForm((prev) => ({
+        ...prev,
+        improvedParagraph1: improved.improvedParagraph1 || prev.improvedParagraph1,
+        improvedParagraph2: improved.improvedParagraph2 || prev.improvedParagraph2,
+        improvedParagraph3: improved.improvedParagraph3 || prev.improvedParagraph3,
+        improvedParagraph4: improved.improvedParagraph4 || prev.improvedParagraph4,
+        improvedParagraph5: improved.improvedParagraph5 || prev.improvedParagraph5
+      }));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setImproving(false);
     }
   };
 
@@ -210,6 +327,22 @@ export default function App() {
             >
               {extracting ? "Filling..." : "Fill Fields From Link"}
             </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={loadParagraphsFromTemplate}
+              disabled={!form.role || loadingTemplate || loading || improving}
+            >
+              {loadingTemplate ? "Loading..." : "Load Paragraph 1-5 From Role Template"}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={generateImprovedParagraphs}
+              disabled={loading || extracting || loadingTemplate || improving}
+            >
+              {improving ? "Improving..." : "Generate Improved Paragraphs"}
+            </button>
           </div>
 
           <div className="long-grid">
@@ -222,31 +355,6 @@ export default function App() {
                 rows="2"
                 required
               />
-            </label>
-
-            <label>
-              Paragraph 1*
-              <textarea name="paragraph1" value={form.paragraph1} onChange={updateField} rows="2" required />
-            </label>
-
-            <label>
-              Paragraph 2*
-              <textarea name="paragraph2" value={form.paragraph2} onChange={updateField} rows="2" required />
-            </label>
-
-            <label>
-              Paragraph 3*
-              <textarea name="paragraph3" value={form.paragraph3} onChange={updateField} rows="2" required />
-            </label>
-
-            <label>
-              Paragraph 4*
-              <textarea name="paragraph4" value={form.paragraph4} onChange={updateField} rows="2" required />
-            </label>
-
-            <label className="span-2">
-              Paragraph 5*
-              <textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows="2" required />
             </label>
 
             <label>
@@ -270,9 +378,98 @@ export default function App() {
                 required
               />
             </label>
+
+            <label className="span-2">
+              Improvement Prompt (Optional)
+              <textarea
+                name="improvementPrompt"
+                value={form.improvementPrompt}
+                onChange={updateField}
+                rows="2"
+                placeholder="Example: Add leadership impact, mention cloud migration, keep tone concise."
+              />
+            </label>
+
+            <label>
+              Improved Paragraph 1
+              <textarea
+                name="improvedParagraph1"
+                value={form.improvedParagraph1}
+                onChange={updateField}
+                rows="2"
+              />
+            </label>
+
+            <label>
+              Improved Paragraph 2
+              <textarea
+                name="improvedParagraph2"
+                value={form.improvedParagraph2}
+                onChange={updateField}
+                rows="2"
+              />
+            </label>
+
+            <label>
+              Improved Paragraph 3
+              <textarea
+                name="improvedParagraph3"
+                value={form.improvedParagraph3}
+                onChange={updateField}
+                rows="2"
+              />
+            </label>
+
+            <label>
+              Improved Paragraph 4
+              <textarea
+                name="improvedParagraph4"
+                value={form.improvedParagraph4}
+                onChange={updateField}
+                rows="2"
+              />
+            </label>
+
+            <label className="span-2">
+              Improved Paragraph 5
+              <textarea
+                name="improvedParagraph5"
+                value={form.improvedParagraph5}
+                onChange={updateField}
+                rows="2"
+              />
+            </label>
+
+            <label>
+              Template Paragraph 1*
+              <textarea name="paragraph1" value={form.paragraph1} onChange={updateField} rows="2" required />
+            </label>
+
+            <label>
+              Template Paragraph 2*
+              <textarea name="paragraph2" value={form.paragraph2} onChange={updateField} rows="2" required />
+            </label>
+
+            <label>
+              Template Paragraph 3*
+              <textarea name="paragraph3" value={form.paragraph3} onChange={updateField} rows="2" required />
+            </label>
+
+            <label>
+              Template Paragraph 4*
+              <textarea name="paragraph4" value={form.paragraph4} onChange={updateField} rows="2" required />
+            </label>
+
+            <label className="span-2">
+              Template Paragraph 5*
+              <textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows="2" required />
+            </label>
           </div>
 
-          <button type="submit" disabled={isDisabled || loading || extracting}>
+          <button
+            type="submit"
+            disabled={isDisabled || loading || extracting || loadingTemplate || improving}
+          >
             {loading ? "Generating..." : "Generate Cover Letter"}
           </button>
         </form>
