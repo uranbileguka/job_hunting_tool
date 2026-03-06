@@ -1,13 +1,34 @@
 # Environment files
 .env
 ignore.env
+.env.local
+.env.*.local
 
 # Python cache
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Node modules / build
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+frontend/dist/
+backend/dist/
+dist/
+build/
+
+# Local vector DB / runtime data
+.chroma/
+chroma/
+*.sqlite3
 
 # macOS
 .DS_Store
