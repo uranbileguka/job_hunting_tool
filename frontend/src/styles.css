@@ -24,9 +24,27 @@ body {
   padding: 0.75rem;
 }
 
+.app-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 0.7rem;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 100%;
+}
+
+.sidebar h2 {
+  margin: 0 0 0.2rem 0;
+  font-size: 1.1rem;
+}
+
 .container {
   margin: 0 auto;
-  max-width: 1400px;
+  max-width: 100%;
   height: 100%;
   display: grid;
   grid-template-rows: auto auto 1fr auto auto;
@@ -133,8 +151,19 @@ button[disabled] {
   cursor: not-allowed;
 }
 
+button.active {
+  background: #0b69a3;
+  color: #fff;
+}
+
 .error {
   color: #9f1239;
+  font-weight: 600;
+  margin: 0;
+}
+
+.success {
+  color: #166534;
   font-weight: 600;
   margin: 0;
 }
@@ -156,6 +185,45 @@ button[disabled] {
   font-size: 1rem;
 }
 
+.tree-group {
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  padding: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.tree-group summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tree-items {
+  margin-top: 0.5rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.tree-item {
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  padding: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.tree-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: #52606d;
+  font-size: 0.85rem;
+}
+
 pre {
   white-space: pre-wrap;
   line-height: 1.42;
@@ -166,6 +234,15 @@ pre {
 @media (max-width: 1000px) {
   body {
     overflow: auto;
+  }
+
+  .app-layout {
+    display: block;
+  }
+
+  .sidebar {
+    height: auto;
+    margin-bottom: 0.5rem;
   }
 
   .page {

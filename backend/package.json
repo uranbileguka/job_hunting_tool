@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run migrate",
+    "prestart": "npm run migrate",
+    "migrate": "node src/db/migrate.js",
     "dev": "node --watch src/server.js",
     "start": "node src/server.js"
   },
@@ -12,6 +15,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "mammoth": "^1.8.0",
-    "openai": "^4.76.0"
+    "openai": "^4.76.0",
+    "pg": "^8.13.3"
   }
 }

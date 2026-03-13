@@ -15,6 +15,16 @@ cp .env.example .env
 
 Then set `OPENAI_API_KEY` in `.env`.
 
+Postgres (single saved form record):
+
+```env
+POSTGRES_USER=de_sales
+POSTGRES_PASSWORD=de_sales
+POSTGRES_DB=job_application
+POSTGRES_PORT=5432
+POSTGRES_HOST=localhost
+```
+
 ## 2) Install dependencies
 
 Node dependencies:
@@ -108,6 +118,14 @@ Behavior:
   - `Uranbileg_CL_{Company}_{JobTitle}.docx`
   - `Uranbileg_CL_{Company}_{JobTitle}.pdf` (if `docx2pdf` succeeds)
 
+### `GET /api/form-record`
+Returns single saved form record (`id=1`) from Postgres.
+
+### `PUT /api/form-record`
+Saves/upserts the current form as single record (`id=1`) in table `job_application`.
+Data is stored in dedicated columns per field (not JSON). Backend mapping class:
+- `backend/src/models/JobApplication.js`
+
 ### `POST /api/extract-job-fields`
 Provide at least one of these links:
 - `officialJobLink`
@@ -130,6 +148,26 @@ Returns extracted fields to auto-fill:
     "location": "...",
     "responsibilities": "- ...\n- ...",
     "qualifications": "- ...\n- ..."
+  }
+}
+```
+
+### `POST /api/extract-job-fields-from-text`
+Body:
+- `webDescription` (raw pasted job/company text)
+
+Returns extracted fields to auto-fill:
+
+```json
+{
+  "fields": {
+    "jobTitle": "...",
+    "companyName": "...",
+    "location": "...",
+    "responsibilities": "- ...\n- ...",
+    "qualifications": "- ...\n- ...",
+    "companyInformation": "...",
+    "companyWebsiteLink": "https://..."
   }
 }
 ```
