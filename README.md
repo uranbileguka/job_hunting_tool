@@ -95,6 +95,19 @@ Uses template paragraphs + company info + responsibilities + qualifications to g
 - `improvedParagraph4` (must include company-specific info and company name)
 - `improvedParagraph5`
 
+### `POST /api/export-cover-letter`
+Uses role template `.docx` and writes:
+- Date
+- Company name
+- Location
+- Improved paragraphs 1-5
+
+Behavior:
+- Preserves template style/layout by updating fixed paragraph slots (same pattern as notebook)
+- Saves files to parent folder of this project with notebook naming:
+  - `Uranbileg_CL_{Company}_{JobTitle}.docx`
+  - `Uranbileg_CL_{Company}_{JobTitle}.pdf` (if `docx2pdf` succeeds)
+
 ### `POST /api/extract-job-fields`
 Provide at least one of these links:
 - `officialJobLink`

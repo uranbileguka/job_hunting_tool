@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
@@ -23,6 +23,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const extractScriptPath = path.resolve(__dirname, "../scripts/extract_job_info.py");
+const exportScriptPath = path.resolve(__dirname, "../scripts/export_cover_letter.py");
+const pythonCmd =
+  process.env.PYTHON_BIN ||
+  (existsSync("/opt/anaconda3/bin/python3") ? "/opt/anaconda3/bin/python3" : "python3");
 
 const roleTemplateEnvMap = {
   "Software engineering intern": "TEMPLATE_SOFTWARE_ENGINEERING_INTERN",
@@ -44,7 +48,7 @@ function pickJobLink(payload) {
 
 function runPythonExtractor(jobLink) {
   return new Promise((resolve, reject) => {
-    const python = spawn("python3", [extractScriptPath, jobLink], {
+    const python = spawn(pythonCmd, [extractScriptPath, jobLink], {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -83,6 +87,47 @@ function runPythonExtractor(jobLink) {
     python.on("error", (error) => {
       reject(error);
     });
+  });
+}
+
+function runPythonExporter(payload) {
+  return new Promise((resolve, reject) => {
+    const python = spawn(pythonCmd, [exportScriptPath], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    python.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    python.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    python.on("close", (code) => {
+      const raw = stdout.trim();
+      if (code !== 0) {
+        return reject(new Error(raw || stderr || "Python exporter failed"));
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.error) {
+          return reject(new Error(parsed.error));
+        }
+        return resolve(parsed);
+      } catch {
+        return reject(new Error("Python exporter returned invalid JSON"));
+      }
+    });
+
+    python.on("error", (error) => reject(error));
+    python.stdin.write(JSON.stringify(payload));
+    python.stdin.end();
   });
 }
 
@@ -360,8 +405,7 @@ app.post("/api/extract-job-fields", async (req, res) => {
     console.error("Job field extraction failed:", error);
 
     return res.status(500).json({
-      error:
-        "Failed to extract fields from link. Ensure Python dependencies from backend/scripts/requirements.txt are installed."
+      error: error.message || "Failed to extract fields from link."
     });
   }
 });
@@ -433,6 +477,51 @@ app.post("/api/improve-paragraphs", async (req, res) => {
     console.error("Paragraph improvement failed:", error);
     return res.status(500).json({
       error: "Failed to improve template paragraphs."
+    });
+  }
+});
+
+app.post("/api/export-cover-letter", async (req, res) => {
+  try {
+    const requiredFields = [
+      "role",
+      "date",
+      "companyName",
+      "location",
+      "jobTitle",
+      "improvedParagraph1",
+      "improvedParagraph2",
+      "improvedParagraph3",
+      "improvedParagraph4",
+      "improvedParagraph5"
+    ];
+    const missing = requiredFields.filter((field) => !req.body[field]?.trim());
+    if (missing.length > 0) {
+      return res.status(400).json({
+        error: `Missing required fields: ${missing.join(", ")}`
+      });
+    }
+
+    const templatePath = await resolveTemplatePath(req.body.role);
+    const outputDir = path.resolve(__dirname, "../../..");
+
+    const result = await runPythonExporter({
+      ...req.body,
+      templatePath,
+      outputDir
+    });
+
+    return res.json({
+      templatePath,
+      outputDir,
+      ...result
+    });
+  } catch (error) {
+    console.error("Cover letter export failed:", error);
+    return res.status(500).json({
+      error:
+        error.message ||
+        "Failed to export cover letter. Ensure python-docx/docx2pdf dependencies are installed."
     });
   }
 });

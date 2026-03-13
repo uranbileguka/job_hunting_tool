@@ -2,6 +2,12 @@ import { useMemo, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5001";
 
+function getTodayLocalDate() {
+  const now = new Date();
+  const tzOffsetMs = now.getTimezoneOffset() * 60 * 1000;
+  return new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 10);
+}
+
 const roleOptions = [
   "Software engineering intern",
   "Software engineer",
@@ -20,7 +26,7 @@ const initialForm = {
   jobrightLink: "",
   officialJobLink: "",
   companyWebsiteLink: "",
-  date: "",
+  date: getTodayLocalDate(),
   companyName: "",
   jobTitle: "",
   location: "",
@@ -47,6 +53,8 @@ export default function App() {
   const [extracting, setExtracting] = useState(false);
   const [loadingTemplate, setLoadingTemplate] = useState(false);
   const [improving, setImproving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportInfo, setExportInfo] = useState("");
   const [error, setError] = useState("");
 
   const isDisabled = useMemo(
@@ -250,6 +258,34 @@ export default function App() {
     }
   };
 
+  const exportCoverLetterFiles = async () => {
+    setExporting(true);
+    setError("");
+    setExportInfo("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/export-cover-letter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to export cover letter files.");
+      }
+
+      const pdfPart = data.pdfCreated
+        ? `PDF: ${data.pdfPath}`
+        : `PDF not created${data.pdfError ? ` (${data.pdfError})` : ""}`;
+      setExportInfo(`DOCX: ${data.docxPath} | ${pdfPart}`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="page">
       <main className="container">
@@ -339,9 +375,17 @@ export default function App() {
               className="secondary"
               type="button"
               onClick={generateImprovedParagraphs}
-              disabled={loading || extracting || loadingTemplate || improving}
+              disabled={loading || extracting || loadingTemplate || improving || exporting}
             >
               {improving ? "Improving..." : "Generate Improved Paragraphs"}
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              onClick={exportCoverLetterFiles}
+              disabled={loading || extracting || loadingTemplate || improving || exporting}
+            >
+              {exporting ? "Exporting..." : "Export DOCX + PDF"}
             </button>
           </div>
 
@@ -468,13 +512,14 @@ export default function App() {
 
           <button
             type="submit"
-            disabled={isDisabled || loading || extracting || loadingTemplate || improving}
+            disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting}
           >
             {loading ? "Generating..." : "Generate Cover Letter"}
           </button>
         </form>
 
         {error ? <p className="error">{error}</p> : null}
+        {exportInfo ? <p>{exportInfo}</p> : null}
 
         {letter ? (
           <section className="card output">
