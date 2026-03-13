@@ -624,6 +624,53 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/master-cv", async (_req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const result = await dbPool.query("SELECT content, updated_at FROM master_cv WHERE id = 1");
+    const row = result.rows[0] || { content: "", updated_at: null };
+    return res.json({
+      content: row.content || "",
+      updatedAt: row.updated_at
+    });
+  } catch (error) {
+    console.error("Load master CV failed:", error);
+    return res.status(500).json({ error: "Failed to load master CV." });
+  }
+});
+
+app.put("/api/master-cv", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const content = String(req.body?.content || "");
+    const result = await dbPool.query(
+      `
+      INSERT INTO master_cv (id, content, updated_at)
+      VALUES (1, $1, NOW())
+      ON CONFLICT (id)
+      DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+      RETURNING updated_at
+    `,
+      [content]
+    );
+    return res.json({
+      saved: true,
+      updatedAt: result.rows[0].updated_at
+    });
+  } catch (error) {
+    console.error("Save master CV failed:", error);
+    return res.status(500).json({ error: "Failed to save master CV." });
+  }
+});
+
 app.get("/api/form-record", async (_req, res) => {
   try {
     if (!dbReady) {

@@ -115,5 +115,18 @@ export const migrations = [
       ALTER TABLE job_application
       ALTER COLUMN id SET DEFAULT nextval('job_application_id_seq');
     `
+  },
+  {
+    id: "006_create_master_cv_table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS master_cv (
+        id INTEGER PRIMARY KEY,
+        content TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      INSERT INTO master_cv (id, content)
+      VALUES (1, '')
+      ON CONFLICT (id) DO NOTHING;
+    `
   }
 ];

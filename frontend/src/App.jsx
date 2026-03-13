@@ -1,4 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
+import { Select } from "./components/ui/select";
+import { Textarea } from "./components/ui/textarea";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5001";
 
@@ -55,6 +62,9 @@ export default function App() {
   const [currentApplicationId, setCurrentApplicationId] = useState(null);
   const [applications, setApplications] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [masterCv, setMasterCv] = useState("");
+  const [loadingMasterCv, setLoadingMasterCv] = useState(false);
+  const [savingMasterCv, setSavingMasterCv] = useState(false);
 
   const [letter, setLetter] = useState("");
   const [loading, setLoading] = useState(false);
@@ -133,9 +143,43 @@ export default function App() {
     }
   };
 
+  const loadMasterCv = async () => {
+    setLoadingMasterCv(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/master-cv`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load master CV.");
+      setMasterCv(String(data.content || ""));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingMasterCv(false);
+    }
+  };
+
+  const saveMasterCv = async () => {
+    setSavingMasterCv(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/master-cv`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: masterCv })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save master CV.");
+      setFillInfo("Master CV saved.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSavingMasterCv(false);
+    }
+  };
+
   useEffect(() => {
     loadApplications();
     loadTemplates();
+    loadMasterCv();
   }, []);
 
   const startNewForm = () => {
@@ -444,261 +488,197 @@ export default function App() {
   };
 
   return (
-    <div className="page app-layout">
-      <aside className="card sidebar">
-        <h2>Menu</h2>
-        <button type="button" className={activeMenu === "new" ? "secondary active" : "secondary"} onClick={() => setActiveMenu("new")}>1. New Form</button>
-        <button type="button" className={activeMenu === "applications" ? "secondary active" : "secondary"} onClick={() => setActiveMenu("applications")}>2. Applications ({applications.length})</button>
-        <button type="button" className={activeMenu === "templates" ? "secondary active" : "secondary"} onClick={() => setActiveMenu("templates")}>3. Templates</button>
-      </aside>
+    <div className="h-full p-3">
+      <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-[260px_1fr]">
+        <Card className="h-fit lg:h-full">
+          <CardHeader>
+            <CardTitle>Menu</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Button variant={activeMenu === "new" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("new")}>1. New Form</Button>
+            <Button variant={activeMenu === "applications" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("applications")}>2. Applications ({applications.length})</Button>
+            <Button variant={activeMenu === "templates" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("templates")}>3. Templates</Button>
+            <Button variant={activeMenu === "master-cv" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("master-cv")}>4. Master CV</Button>
+          </CardContent>
+        </Card>
 
-      <main className="container">
-        <h1>Job Hunting Assistant</h1>
-        <p className="subhead">Generate tailored cover letters with GenAI.</p>
+        <div className="grid min-h-0 grid-rows-[auto_auto_1fr_auto_auto] gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">Job Hunting Assistant</h1>
+          <p className="text-sm text-muted-foreground">Generate tailored cover letters with GenAI.</p>
 
-        {activeMenu === "new" ? (
-          <form onSubmit={generateCoverLetter} className="card compact-form">
-            <div className="action-row">
-              <button className="secondary" type="button" onClick={startNewForm}>New</button>
-              <button
-                className="secondary"
-                type="button"
-                onClick={saveApplication}
-                disabled={savingRecord || loadingRecord || loading || extracting || improving || loadingTemplate}
-              >
-                {savingRecord ? "Saving..." : currentApplicationId ? `Update #${currentApplicationId}` : "Save New"}
-              </button>
-              {currentApplicationId ? (
-                <button
-                  className="secondary"
-                  type="button"
-                  onClick={() => deleteApplication(currentApplicationId)}
-                  disabled={deletingId === currentApplicationId}
-                >
-                  {deletingId === currentApplicationId ? "Deleting..." : "Delete Current"}
-                </button>
-              ) : null}
-            </div>
+          {activeMenu === "new" ? (
+            <Card className="min-h-0">
+              <CardContent className="h-full overflow-auto pt-4">
+                <form onSubmit={generateCoverLetter} className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="secondary" onClick={startNewForm}>New</Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={saveApplication}
+                      disabled={savingRecord || loadingRecord || loading || extracting || improving || loadingTemplate}
+                    >
+                      {savingRecord ? "Saving..." : currentApplicationId ? `Update #${currentApplicationId}` : "Save New"}
+                    </Button>
+                    {currentApplicationId ? (
+                      <Button type="button" variant="destructive" onClick={() => deleteApplication(currentApplicationId)} disabled={deletingId === currentApplicationId}>
+                        {deletingId === currentApplicationId ? "Deleting..." : "Delete Current"}
+                      </Button>
+                    ) : null}
+                  </div>
 
-            <div className="grid">
-              <label>
-                Role*
-                <select name="role" value={form.role} onChange={updateField} required>
-                  <option value="">Select role</option>
-                  {roleOptions.map((role) => (
-                    <option key={role} value={role}>{role}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                LinkedIn Link
-                <input name="linkedinLink" type="url" value={form.linkedinLink} onChange={updateField} />
-              </label>
-              <label>
-                Jobright Link
-                <input name="jobrightLink" type="url" value={form.jobrightLink} onChange={updateField} />
-              </label>
-              <label>
-                Official Job Link
-                <input name="officialJobLink" type="url" value={form.officialJobLink} onChange={updateField} />
-              </label>
-              <label>
-                Company Website Link
-                <input name="companyWebsiteLink" type="url" value={form.companyWebsiteLink} onChange={updateField} />
-              </label>
-              <label>
-                Date*
-                <input name="date" type="date" value={form.date} onChange={updateField} required />
-              </label>
-              <label>
-                Company Name*
-                <input name="companyName" value={form.companyName} onChange={updateField} required />
-              </label>
-              <label>
-                Job Title*
-                <input name="jobTitle" value={form.jobTitle} onChange={updateField} required />
-              </label>
-              <label>
-                Location*
-                <input name="location" value={form.location} onChange={updateField} required />
-              </label>
-              <label className="span-2">
-                Web Description
-                <textarea
-                  name="webDescription"
-                  value={form.webDescription}
-                  onChange={updateField}
-                  rows="2"
-                  placeholder="Paste full job/company text from the web here..."
-                />
-              </label>
-            </div>
-
-            <div className="action-row">
-              <button className="secondary" type="button" onClick={extractFieldsFromLink} disabled={!hasAnyJobLink || extracting || loading || savingRecord || loadingRecord}>
-                {extracting ? "Filling..." : "Fill Fields From Link"}
-              </button>
-              <button className="secondary" type="button" onClick={loadParagraphsFromTemplate} disabled={!form.role || loadingTemplate || loading || improving || savingRecord || loadingRecord}>
-                {loadingTemplate ? "Loading..." : "Load Paragraph 1-5 From Role Template"}
-              </button>
-              <button className="secondary" type="button" onClick={extractFieldsFromWebDescription} disabled={!form.webDescription || extracting || loading || improving || loadingTemplate || savingRecord || loadingRecord}>
-                {extracting ? "Filling..." : "Fill From Web Description"}
-              </button>
-              <button className="secondary" type="button" onClick={generateImprovedParagraphs} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>
-                {improving ? "Improving..." : "Generate Improved Paragraphs"}
-              </button>
-              <button className="secondary" type="button" onClick={exportCoverLetterFiles} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>
-                {exporting ? "Exporting..." : "Export DOCX + PDF"}
-              </button>
-            </div>
-
-            <div className="long-grid">
-              <label className="span-2">
-                Company Information*
-                <textarea name="companyInformation" value={form.companyInformation} onChange={updateField} rows="2" required />
-              </label>
-
-              <label>
-                Responsibilities*
-                <textarea name="responsibilities" value={form.responsibilities} onChange={updateField} rows="2" required />
-              </label>
-
-              <label>
-                Qualifications*
-                <textarea name="qualifications" value={form.qualifications} onChange={updateField} rows="2" required />
-              </label>
-
-              <label className="span-2">
-                Improvement Prompt (Optional)
-                <textarea
-                  name="improvementPrompt"
-                  value={form.improvementPrompt}
-                  onChange={updateField}
-                  rows="2"
-                  placeholder="Example: Add leadership impact, mention cloud migration, keep tone concise."
-                />
-              </label>
-
-              <label>
-                Improved Paragraph 1
-                <textarea name="improvedParagraph1" value={form.improvedParagraph1} onChange={updateField} rows="2" />
-              </label>
-              <label>
-                Improved Paragraph 2
-                <textarea name="improvedParagraph2" value={form.improvedParagraph2} onChange={updateField} rows="2" />
-              </label>
-              <label>
-                Improved Paragraph 3
-                <textarea name="improvedParagraph3" value={form.improvedParagraph3} onChange={updateField} rows="2" />
-              </label>
-              <label>
-                Improved Paragraph 4
-                <textarea name="improvedParagraph4" value={form.improvedParagraph4} onChange={updateField} rows="2" />
-              </label>
-              <label className="span-2">
-                Improved Paragraph 5
-                <textarea name="improvedParagraph5" value={form.improvedParagraph5} onChange={updateField} rows="2" />
-              </label>
-
-              <label>
-                Template Paragraph 1*
-                <textarea name="paragraph1" value={form.paragraph1} onChange={updateField} rows="2" required />
-              </label>
-              <label>
-                Template Paragraph 2*
-                <textarea name="paragraph2" value={form.paragraph2} onChange={updateField} rows="2" required />
-              </label>
-              <label>
-                Template Paragraph 3*
-                <textarea name="paragraph3" value={form.paragraph3} onChange={updateField} rows="2" required />
-              </label>
-              <label>
-                Template Paragraph 4*
-                <textarea name="paragraph4" value={form.paragraph4} onChange={updateField} rows="2" required />
-              </label>
-              <label className="span-2">
-                Template Paragraph 5*
-                <textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows="2" required />
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}
-            >
-              {loading ? "Generating..." : "Generate Cover Letter"}
-            </button>
-          </form>
-        ) : null}
-
-        {activeMenu === "applications" ? (
-          <section className="card compact-form">
-            <div className="output-header">
-              <h2>Applications</h2>
-              <button type="button" className="secondary" onClick={loadApplications} disabled={loadingApplications}>
-                {loadingApplications ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {groupedApplications.length === 0 ? <p>No applications yet.</p> : null}
-
-            {groupedApplications.map(([company, apps]) => (
-              <details key={company} className="tree-group" open>
-                <summary>{company} ({apps.length})</summary>
-                <div className="tree-items">
-                  {apps.map((app) => (
-                    <div className="tree-item" key={app.id}>
-                      <div>
-                        <strong>#{app.id}</strong> {app.jobTitle || "Untitled"}
-                        <div className="muted">{app.role || "No role"} | {app.location || "No location"} | {app.date || "No date"}</div>
-                      </div>
-                      <div className="tree-actions">
-                        <button type="button" className="secondary" onClick={() => loadApplication(app.id)}>Open/Edit</button>
-                        <button type="button" className="secondary" onClick={() => deleteApplication(app.id)} disabled={deletingId === app.id}>
-                          {deletingId === app.id ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-1">
+                      <Label>Role*</Label>
+                      <Select name="role" value={form.role} onChange={updateField} required>
+                        <option value="">Select role</option>
+                        {roleOptions.map((role) => (
+                          <option key={role} value={role}>{role}</option>
+                        ))}
+                      </Select>
                     </div>
-                  ))}
+                    <div className="space-y-1"><Label>LinkedIn Link</Label><Input name="linkedinLink" type="url" value={form.linkedinLink} onChange={updateField} /></div>
+                    <div className="space-y-1"><Label>Jobright Link</Label><Input name="jobrightLink" type="url" value={form.jobrightLink} onChange={updateField} /></div>
+                    <div className="space-y-1"><Label>Official Job Link</Label><Input name="officialJobLink" type="url" value={form.officialJobLink} onChange={updateField} /></div>
+                    <div className="space-y-1"><Label>Company Website Link</Label><Input name="companyWebsiteLink" type="url" value={form.companyWebsiteLink} onChange={updateField} /></div>
+                    <div className="space-y-1"><Label>Date*</Label><Input name="date" type="date" value={form.date} onChange={updateField} required /></div>
+                    <div className="space-y-1"><Label>Company Name*</Label><Input name="companyName" value={form.companyName} onChange={updateField} required /></div>
+                    <div className="space-y-1"><Label>Job Title*</Label><Input name="jobTitle" value={form.jobTitle} onChange={updateField} required /></div>
+                    <div className="space-y-1"><Label>Location*</Label><Input name="location" value={form.location} onChange={updateField} required /></div>
+                    <div className="space-y-1 md:col-span-2 xl:col-span-2">
+                      <Label>Web Description</Label>
+                      <Textarea name="webDescription" value={form.webDescription} onChange={updateField} rows={2} placeholder="Paste full job/company text from the web here..." />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="secondary" onClick={extractFieldsFromLink} disabled={!hasAnyJobLink || extracting || loading || savingRecord || loadingRecord}>{extracting ? "Filling..." : "Fill Fields From Link"}</Button>
+                    <Button type="button" variant="secondary" onClick={loadParagraphsFromTemplate} disabled={!form.role || loadingTemplate || loading || improving || savingRecord || loadingRecord}>{loadingTemplate ? "Loading..." : "Load Paragraph 1-5 From Role Template"}</Button>
+                    <Button type="button" variant="secondary" onClick={extractFieldsFromWebDescription} disabled={!form.webDescription || extracting || loading || improving || loadingTemplate || savingRecord || loadingRecord}>{extracting ? "Filling..." : "Fill From Web Description"}</Button>
+                    <Button type="button" variant="secondary" onClick={generateImprovedParagraphs} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{improving ? "Improving..." : "Generate Improved Paragraphs"}</Button>
+                    <Button type="button" variant="secondary" onClick={exportCoverLetterFiles} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{exporting ? "Exporting..." : "Export DOCX + PDF"}</Button>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                    <div className="space-y-1 xl:col-span-2"><Label>Company Information*</Label><Textarea name="companyInformation" value={form.companyInformation} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1"><Label>Responsibilities*</Label><Textarea name="responsibilities" value={form.responsibilities} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1"><Label>Qualifications*</Label><Textarea name="qualifications" value={form.qualifications} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1 xl:col-span-2"><Label>Improvement Prompt (Optional)</Label><Textarea name="improvementPrompt" value={form.improvementPrompt} onChange={updateField} rows={2} /></div>
+
+                    <div className="space-y-1"><Label>Improved Paragraph 1</Label><Textarea name="improvedParagraph1" value={form.improvedParagraph1} onChange={updateField} rows={2} /></div>
+                    <div className="space-y-1"><Label>Improved Paragraph 2</Label><Textarea name="improvedParagraph2" value={form.improvedParagraph2} onChange={updateField} rows={2} /></div>
+                    <div className="space-y-1"><Label>Improved Paragraph 3</Label><Textarea name="improvedParagraph3" value={form.improvedParagraph3} onChange={updateField} rows={2} /></div>
+                    <div className="space-y-1"><Label>Improved Paragraph 4</Label><Textarea name="improvedParagraph4" value={form.improvedParagraph4} onChange={updateField} rows={2} /></div>
+                    <div className="space-y-1 xl:col-span-2"><Label>Improved Paragraph 5</Label><Textarea name="improvedParagraph5" value={form.improvedParagraph5} onChange={updateField} rows={2} /></div>
+
+                    <div className="space-y-1"><Label>Template Paragraph 1*</Label><Textarea name="paragraph1" value={form.paragraph1} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1"><Label>Template Paragraph 2*</Label><Textarea name="paragraph2" value={form.paragraph2} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1"><Label>Template Paragraph 3*</Label><Textarea name="paragraph3" value={form.paragraph3} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1"><Label>Template Paragraph 4*</Label><Textarea name="paragraph4" value={form.paragraph4} onChange={updateField} rows={2} required /></div>
+                    <div className="space-y-1 xl:col-span-2"><Label>Template Paragraph 5*</Label><Textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows={2} required /></div>
+                  </div>
+
+                  <Button type="submit" disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{loading ? "Generating..." : "Generate Cover Letter"}</Button>
+                </form>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {activeMenu === "applications" ? (
+            <Card className="min-h-0">
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Applications</CardTitle>
+                <Button type="button" variant="secondary" onClick={loadApplications} disabled={loadingApplications}>{loadingApplications ? "Refreshing..." : "Refresh"}</Button>
+              </CardHeader>
+              <CardContent className="h-full overflow-auto space-y-3">
+                {groupedApplications.length === 0 ? <p className="text-sm text-muted-foreground">No applications yet.</p> : null}
+                {groupedApplications.map(([company, apps]) => (
+                  <details key={company} className="rounded-md border border-border bg-white p-2" open>
+                    <summary className="cursor-pointer text-sm font-semibold">{company} ({apps.length})</summary>
+                    <div className="mt-2 space-y-2">
+                      {apps.map((app) => (
+                        <div key={app.id} className="flex flex-col gap-2 rounded-md border border-border p-2 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="font-semibold">#{app.id} {app.jobTitle || "Untitled"}</div>
+                            <p className="text-xs text-muted-foreground">{app.role || "No role"} | {app.location || "No location"} | {app.date || "No date"}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button type="button" variant="secondary" onClick={() => loadApplication(app.id)}>Open/Edit</Button>
+                            <Button type="button" variant="destructive" onClick={() => deleteApplication(app.id)} disabled={deletingId === app.id}>{deletingId === app.id ? "Deleting..." : "Delete"}</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {activeMenu === "templates" ? (
+            <Card className="min-h-0">
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Templates</CardTitle>
+                <Button type="button" variant="secondary" onClick={loadTemplates}>Refresh</Button>
+              </CardHeader>
+              <CardContent className="h-full overflow-auto space-y-2">
+                <p className="text-sm text-muted-foreground">Templates are loaded from backend templates folder.</p>
+                {templates.length === 0 ? <p className="text-sm text-muted-foreground">No template files found.</p> : null}
+                {templates.map((tpl) => (
+                  <div key={tpl.path} className="rounded-md border border-border bg-white p-2">
+                    <div className="font-medium">{tpl.name}</div>
+                    <div className="text-xs text-muted-foreground break-all">{tpl.path}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {activeMenu === "master-cv" ? (
+            <Card className="min-h-0">
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Master CV</CardTitle>
+                <div className="flex gap-2">
+                  <Button type="button" variant="secondary" onClick={loadMasterCv} disabled={loadingMasterCv}>
+                    {loadingMasterCv ? "Loading..." : "Refresh"}
+                  </Button>
+                  <Button type="button" onClick={saveMasterCv} disabled={savingMasterCv || loadingMasterCv}>
+                    {savingMasterCv ? "Saving..." : "Save Master CV"}
+                  </Button>
                 </div>
-              </details>
-            ))}
-          </section>
-        ) : null}
+              </CardHeader>
+              <CardContent className="h-full overflow-auto space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Store your full master CV text here. It is saved in PostgreSQL.
+                </p>
+                <Textarea
+                  value={masterCv}
+                  onChange={(e) => setMasterCv(e.target.value)}
+                  rows={20}
+                  className="min-h-[60vh]"
+                  placeholder="Paste your full master CV text..."
+                />
+              </CardContent>
+            </Card>
+          ) : null}
 
-        {activeMenu === "templates" ? (
-          <section className="card compact-form">
-            <div className="output-header">
-              <h2>Templates</h2>
-              <button type="button" className="secondary" onClick={loadTemplates}>Refresh</button>
-            </div>
-            <p className="muted">Templates are loaded from backend `/templates` folder.</p>
-            {templates.length === 0 ? <p>No template files found.</p> : null}
-            {templates.map((tpl) => (
-              <div key={tpl.path} className="tree-item">
-                <div>
-                  <strong>{tpl.name}</strong>
-                  <div className="muted">{tpl.path}</div>
-                </div>
-              </div>
-            ))}
-          </section>
-        ) : null}
+          {error ? <Badge className="bg-destructive text-destructive-foreground">{error}</Badge> : null}
+          {fillInfo ? <Badge>{fillInfo}</Badge> : null}
+          {exportInfo ? <p className="text-sm text-muted-foreground">{exportInfo}</p> : null}
 
-        {error ? <p className="error">{error}</p> : null}
-        {fillInfo ? <p className="success">{fillInfo}</p> : null}
-        {exportInfo ? <p>{exportInfo}</p> : null}
-
-        {letter ? (
-          <section className="card output">
-            <div className="output-header">
-              <h2>Generated Cover Letter</h2>
-              <button type="button" onClick={() => navigator.clipboard.writeText(letter)}>Copy</button>
-            </div>
-            <pre>{letter}</pre>
-          </section>
-        ) : null}
-      </main>
+          {letter ? (
+            <Card className="max-h-[28vh] overflow-auto">
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Generated Cover Letter</CardTitle>
+                <Button type="button" onClick={() => navigator.clipboard.writeText(letter)}>Copy</Button>
+              </CardHeader>
+              <CardContent>
+                <pre className="whitespace-pre-wrap font-serif leading-6">{letter}</pre>
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

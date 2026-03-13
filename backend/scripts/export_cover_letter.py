@@ -28,6 +28,27 @@ def apply_placeholders(text: str, payload: dict) -> str:
     return out
 
 
+def resolve_soffice() -> str:
+    env_soffice = os.getenv("SOFFICE_BIN", "").strip()
+    if env_soffice and Path(env_soffice).exists():
+        return env_soffice
+
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found:
+        return found
+
+    candidates = [
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/Applications/OpenOffice.app/Contents/MacOS/soffice",
+        "/opt/homebrew/bin/soffice",
+        "/usr/local/bin/soffice",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return ""
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -126,10 +147,10 @@ def main() -> int:
     pdf_error = ""
 
     # Prefer headless LibreOffice conversion to avoid OS permission prompts.
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = resolve_soffice()
     if soffice:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [
                     soffice,
                     "--headless",
@@ -146,7 +167,11 @@ def main() -> int:
             )
             pdf_created = pdf_path.exists()
             if not pdf_created:
-                pdf_error = "LibreOffice conversion ran but PDF file was not produced."
+                details = (result.stderr or result.stdout or "").strip()
+                pdf_error = (
+                    "LibreOffice conversion ran but PDF file was not produced."
+                    + (f" Details: {details}" if details else "")
+                )
         except Exception as exc:
             pdf_error = f"LibreOffice conversion failed: {exc}"
     elif os.getenv("ENABLE_DOCX2PDF", "").strip() == "1":
