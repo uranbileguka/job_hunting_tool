@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import pg from "pg";
 import { spawn } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
+import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { constants as fsConstants, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ const app = express();
 const port = process.env.PORT || 5001;
 
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "20mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { Pool } = pg;
@@ -52,6 +52,7 @@ const dbPool = new Pool({
   database: process.env.POSTGRES_DB || "job_application"
 });
 let dbReady = false;
+const DEFAULT_USER_ID = 1;
 
 function pickJobLink(payload) {
   return (
@@ -210,7 +211,8 @@ async function fileExists(filePath) {
 async function resolveTemplatePath(role) {
   const envKey = roleTemplateEnvMap[role];
   const envPath = envKey ? process.env[envKey] : "";
-  const templateRoot = process.env.TEMPLATE_ROOT || process.cwd();
+  const templateRootSetting = await getUserUrlSetting("template_root");
+  const templateRoot = templateRootSetting || process.env.TEMPLATE_ROOT || process.cwd();
   const slug = roleToSlug(role);
 
   const candidates = [];
@@ -266,6 +268,56 @@ function parseApplicationId(rawId) {
     return null;
   }
   return id;
+}
+
+function normalizeDirectory(inputPath) {
+  const value = String(inputPath || "").trim();
+  if (!value) return "";
+  return path.resolve(value);
+}
+
+async function ensureUserUrlsRow(userId = DEFAULT_USER_ID) {
+  if (!dbReady) return;
+  await dbPool.query(
+    `
+    INSERT INTO user_urls (user_id)
+    VALUES ($1)
+    ON CONFLICT (user_id)
+    DO NOTHING
+  `,
+    [userId]
+  );
+}
+
+async function getUserUrlSetting(key, userId = DEFAULT_USER_ID) {
+  if (!dbReady) return "";
+  if (!["template_root", "export_root"].includes(key)) return "";
+  await ensureUserUrlsRow(userId);
+  const result = await dbPool.query(
+    `SELECT ${key} AS value FROM user_urls WHERE user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  return String(result.rows?.[0]?.value || "").trim();
+}
+
+async function setUserUrlSettings({ templateRoot, exportRoot }, userId = DEFAULT_USER_ID) {
+  if (!dbReady) return;
+  await ensureUserUrlsRow(userId);
+  await dbPool.query(
+    `
+    UPDATE user_urls
+    SET template_root = $1,
+        export_root = $2,
+        updated_at = NOW()
+    WHERE user_id = $3
+  `,
+    [String(templateRoot || ""), String(exportRoot || ""), userId]
+  );
+}
+
+function sanitizeTemplateFilename(fileName) {
+  const base = path.basename(String(fileName || "").trim()).replace(/[^\w.\- ]+/g, "_");
+  return base.toLowerCase().endsWith(".docx") ? base : "";
 }
 
 function buildPrompt(payload) {
@@ -846,9 +898,185 @@ app.delete("/api/applications/:id", async (req, res) => {
   }
 });
 
+app.get("/api/job-roles", async (_req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const result = await dbPool.query(
+      `
+      SELECT id, user_id, name, cover_letter_template, updated_at
+      FROM job_roles
+      WHERE user_id = $1
+      ORDER BY lower(name) ASC, id ASC
+    `,
+      [DEFAULT_USER_ID]
+    );
+    return res.json({
+      jobRoles: result.rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        name: row.name || "",
+        coverLetterTemplate: row.cover_letter_template || "",
+        updatedAt: row.updated_at
+      }))
+    });
+  } catch (error) {
+    console.error("List job roles failed:", error);
+    return res.status(500).json({ error: "Failed to list job roles." });
+  }
+});
+
+app.get("/api/job-roles/:id", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const id = parseApplicationId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid job role id." });
+    }
+    const result = await dbPool.query(
+      `
+      SELECT id, user_id, name, cover_letter_template, updated_at
+      FROM job_roles
+      WHERE id = $1 AND user_id = $2
+      LIMIT 1
+    `,
+      [id, DEFAULT_USER_ID]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Job role not found." });
+    }
+    const row = result.rows[0];
+    return res.json({
+      jobRole: {
+        id: row.id,
+        userId: row.user_id,
+        name: row.name || "",
+        coverLetterTemplate: row.cover_letter_template || "",
+        updatedAt: row.updated_at
+      }
+    });
+  } catch (error) {
+    console.error("Get job role failed:", error);
+    return res.status(500).json({ error: "Failed to load job role." });
+  }
+});
+
+app.post("/api/job-roles", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const name = String(req.body?.name || "").trim();
+    const coverLetterTemplate = String(req.body?.coverLetterTemplate || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "name is required." });
+    }
+    const result = await dbPool.query(
+      `
+      INSERT INTO job_roles (user_id, name, cover_letter_template, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      RETURNING id, updated_at
+    `,
+      [DEFAULT_USER_ID, name, coverLetterTemplate]
+    );
+    return res.status(201).json({
+      created: true,
+      id: result.rows[0].id,
+      userId: DEFAULT_USER_ID,
+      updatedAt: result.rows[0].updated_at
+    });
+  } catch (error) {
+    console.error("Create job role failed:", error);
+    if (error?.code === "23505" || error?.constraint === "idx_job_roles_user_name") {
+      return res.status(409).json({ error: "A job role with this name already exists." });
+    }
+    return res.status(500).json({ error: "Failed to create job role." });
+  }
+});
+
+app.put("/api/job-roles/:id", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const id = parseApplicationId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid job role id." });
+    }
+    const name = String(req.body?.name || "").trim();
+    const coverLetterTemplate = String(req.body?.coverLetterTemplate || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "name is required." });
+    }
+    const result = await dbPool.query(
+      `
+      UPDATE job_roles
+      SET name = $1,
+          cover_letter_template = $2,
+          updated_at = NOW()
+      WHERE id = $3 AND user_id = $4
+      RETURNING updated_at
+    `,
+      [name, coverLetterTemplate, id, DEFAULT_USER_ID]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Job role not found." });
+    }
+    return res.json({
+      saved: true,
+      id,
+      userId: DEFAULT_USER_ID,
+      updatedAt: result.rows[0].updated_at
+    });
+  } catch (error) {
+    console.error("Update job role failed:", error);
+    if (error?.code === "23505" || error?.constraint === "idx_job_roles_user_name") {
+      return res.status(409).json({ error: "A job role with this name already exists." });
+    }
+    return res.status(500).json({ error: "Failed to update job role." });
+  }
+});
+
+app.delete("/api/job-roles/:id", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const id = parseApplicationId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid job role id." });
+    }
+    const result = await dbPool.query("DELETE FROM job_roles WHERE id = $1 AND user_id = $2", [
+      id,
+      DEFAULT_USER_ID
+    ]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Job role not found." });
+    }
+    return res.json({ deleted: true, id, userId: DEFAULT_USER_ID });
+  } catch (error) {
+    console.error("Delete job role failed:", error);
+    return res.status(500).json({ error: "Failed to delete job role." });
+  }
+});
+
 app.get("/api/templates", async (_req, res) => {
   try {
-    const templateRoot = process.env.TEMPLATE_ROOT || process.cwd();
+    const templateRootSetting = await getUserUrlSetting("template_root");
+    const templateRoot = templateRootSetting || process.env.TEMPLATE_ROOT || process.cwd();
     const templatesDir = path.resolve(templateRoot, "templates");
     const entries = await readdir(templatesDir, { withFileTypes: true });
     const templates = entries
@@ -858,9 +1086,84 @@ app.get("/api/templates", async (_req, res) => {
         path: path.resolve(templatesDir, entry.name)
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
-    return res.json({ templates });
+    return res.json({ templates, templateRoot, templatesDir });
   } catch (error) {
-    return res.json({ templates: [] });
+    const templateRootSetting = await getUserUrlSetting("template_root");
+    const templateRoot = templateRootSetting || process.env.TEMPLATE_ROOT || process.cwd();
+    return res.json({
+      templates: [],
+      templateRoot,
+      templatesDir: path.resolve(templateRoot, "templates")
+    });
+  }
+});
+
+app.get("/api/settings", async (_req, res) => {
+  try {
+    const templateRoot =
+      (await getUserUrlSetting("template_root", DEFAULT_USER_ID)) ||
+      process.env.TEMPLATE_ROOT ||
+      process.cwd();
+    const exportRoot = await getUserUrlSetting("export_root", DEFAULT_USER_ID);
+    return res.json({ userId: DEFAULT_USER_ID, templateRoot, exportRoot });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to load settings." });
+  }
+});
+
+app.put("/api/settings", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const templateRoot = normalizeDirectory(req.body?.templateRoot);
+    const exportRoot = normalizeDirectory(req.body?.exportRoot);
+    await setUserUrlSettings({ templateRoot, exportRoot }, DEFAULT_USER_ID);
+    return res.json({ saved: true, userId: DEFAULT_USER_ID, templateRoot, exportRoot });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to save settings." });
+  }
+});
+
+app.post("/api/templates/upload", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    if (files.length === 0) {
+      return res.status(400).json({ error: "No files provided." });
+    }
+
+    const templateRootSetting = await getUserUrlSetting("template_root");
+    const templateRoot = templateRootSetting || process.env.TEMPLATE_ROOT || process.cwd();
+    const templatesDir = path.resolve(templateRoot, "templates");
+    await mkdir(templatesDir, { recursive: true });
+
+    const saved = [];
+    for (const file of files) {
+      const safeName = sanitizeTemplateFilename(file?.name);
+      if (!safeName) continue;
+      const contentBase64 = String(file?.contentBase64 || "");
+      if (!contentBase64) continue;
+      const fileBuffer = Buffer.from(contentBase64, "base64");
+      const target = path.resolve(templatesDir, safeName);
+      await writeFile(target, fileBuffer);
+      saved.push({ name: safeName, path: target });
+    }
+
+    return res.json({
+      uploaded: saved.length,
+      files: saved,
+      templatesDir
+    });
+  } catch (error) {
+    console.error("Template upload failed:", error);
+    return res.status(500).json({ error: "Failed to upload template files." });
   }
 });
 
@@ -1076,7 +1379,11 @@ app.post("/api/export-cover-letter", async (req, res) => {
     }
 
     const templatePath = await resolveTemplatePath(req.body.role);
-    const outputDir = path.resolve(__dirname, "../../..");
+    const exportRootSetting = await getUserUrlSetting("export_root");
+    const outputDir =
+      normalizeDirectory(req.body.exportDirectory) ||
+      exportRootSetting ||
+      path.resolve(__dirname, "../../..");
 
     const result = await runPythonExporter({
       ...req.body,

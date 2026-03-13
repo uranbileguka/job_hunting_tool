@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
@@ -34,6 +34,7 @@ function createInitialForm() {
     jobrightLink: "",
     officialJobLink: "",
     companyWebsiteLink: "",
+    exportDirectory: "",
     date: getTodayLocalDate(),
     companyName: "",
     jobTitle: "",
@@ -62,7 +63,25 @@ export default function App() {
   const [currentApplicationId, setCurrentApplicationId] = useState(null);
   const [applications, setApplications] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [templateRoot, setTemplateRoot] = useState("");
+  const [exportRoot, setExportRoot] = useState("");
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [templateFiles, setTemplateFiles] = useState([]);
+  const [uploadingTemplates, setUploadingTemplates] = useState(false);
   const [masterCv, setMasterCv] = useState("");
+  const [jobRoles, setJobRoles] = useState([]);
+  const [loadingJobRoles, setLoadingJobRoles] = useState(false);
+  const [savingJobRole, setSavingJobRole] = useState(false);
+  const [deletingJobRoleId, setDeletingJobRoleId] = useState(null);
+  const [selectedJobRoleId, setSelectedJobRoleId] = useState(null);
+  const [showJobRoleForm, setShowJobRoleForm] = useState(false);
+  const [uploadingRoleTemplate, setUploadingRoleTemplate] = useState(false);
+  const roleTemplateInputRef = useRef(null);
+  const [jobRoleForm, setJobRoleForm] = useState({
+    userId: 1,
+    name: "",
+    coverLetterTemplate: ""
+  });
   const [loadingMasterCv, setLoadingMasterCv] = useState(false);
   const [savingMasterCv, setSavingMasterCv] = useState(false);
 
@@ -113,6 +132,19 @@ export default function App() {
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [applications]);
 
+  const groupedJobRoles = useMemo(() => {
+    const groups = new Map();
+    for (const role of jobRoles) {
+      const first = String(role.name || "").trim().charAt(0).toUpperCase() || "#";
+      const key = /[A-Z]/.test(first) ? first : "#";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(role);
+    }
+    return Array.from(groups.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, roles]) => [key, roles.sort((a, b) => a.name.localeCompare(b.name))]);
+  }, [jobRoles]);
+
   const updateField = (event) => {
     const { name, value } = event.target;
     setForm((prev) => ({ ...prev, [name]: value }));
@@ -138,8 +170,97 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to load templates.");
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
+      if (data.templateRoot) {
+        setTemplateRoot(String(data.templateRoot));
+      }
     } catch {
       setTemplates([]);
+    }
+  };
+
+  const loadSettings = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/settings`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load settings.");
+      setTemplateRoot(String(data.templateRoot || ""));
+      setExportRoot(String(data.exportRoot || ""));
+      setForm((prev) => ({
+        ...prev,
+        exportDirectory: prev.exportDirectory || String(data.exportRoot || "")
+      }));
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSavingSettings(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          templateRoot,
+          exportRoot
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save settings.");
+      setTemplateRoot(String(data.templateRoot || ""));
+      setExportRoot(String(data.exportRoot || ""));
+      setFillInfo("Template/Export settings saved.");
+      await loadTemplates();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const uploadTemplateFiles = async () => {
+    if (!templateFiles.length) {
+      setError("Choose one or more .docx template files first.");
+      return;
+    }
+    setUploadingTemplates(true);
+    setError("");
+    try {
+      const files = await Promise.all(
+        templateFiles.map(
+          (file) =>
+            new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const raw = String(reader.result || "");
+                const contentBase64 = raw.includes(",") ? raw.split(",")[1] : "";
+                resolve({
+                  name: file.name,
+                  contentBase64
+                });
+              };
+              reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+              reader.readAsDataURL(file);
+            })
+        )
+      );
+
+      const response = await fetch(`${API_BASE_URL}/api/templates/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to upload templates.");
+
+      setFillInfo(`Uploaded ${data.uploaded || 0} template file(s).`);
+      setTemplateFiles([]);
+      await loadTemplates();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUploadingTemplates(false);
     }
   };
 
@@ -154,6 +275,155 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setLoadingMasterCv(false);
+    }
+  };
+
+  const loadJobRoles = async () => {
+    setLoadingJobRoles(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/job-roles`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load job roles.");
+      const nextRoles = Array.isArray(data.jobRoles) ? data.jobRoles : [];
+      setJobRoles(nextRoles);
+      if (nextRoles.length === 0) {
+        setShowJobRoleForm(false);
+      }
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingJobRoles(false);
+    }
+  };
+
+  const resetJobRoleForm = () => {
+    setSelectedJobRoleId(null);
+    setJobRoleForm({
+      userId: 1,
+      name: "",
+      coverLetterTemplate: ""
+    });
+  };
+
+  const startCreateJobRole = () => {
+    resetJobRoleForm();
+    setShowJobRoleForm(true);
+  };
+
+  const openJobRole = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/job-roles/${id}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load job role.");
+      const role = data.jobRole || {};
+      setSelectedJobRoleId(role.id || id);
+      setJobRoleForm({
+        userId: Number(role.userId || 1),
+        name: String(role.name || ""),
+        coverLetterTemplate: String(role.coverLetterTemplate || "")
+      });
+      setShowJobRoleForm(true);
+      setFillInfo(`Loaded job role #${id}.`);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const saveJobRole = async () => {
+    setSavingJobRole(true);
+    setError("");
+    try {
+      const payload = {
+        name: String(jobRoleForm.name || "").trim(),
+        coverLetterTemplate: String(jobRoleForm.coverLetterTemplate || "").trim()
+      };
+      if (!payload.name) {
+        throw new Error("Job role name is required.");
+      }
+      const method = selectedJobRoleId ? "PUT" : "POST";
+      const url = selectedJobRoleId
+        ? `${API_BASE_URL}/api/job-roles/${selectedJobRoleId}`
+        : `${API_BASE_URL}/api/job-roles`;
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save job role.");
+      const savedId = selectedJobRoleId || data.id;
+      if (savedId) setSelectedJobRoleId(savedId);
+      setShowJobRoleForm(true);
+      await loadJobRoles();
+      setFillInfo(selectedJobRoleId ? `Job role #${savedId} updated.` : `Job role #${savedId} created.`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSavingJobRole(false);
+    }
+  };
+
+  const onBrowseRoleTemplate = () => {
+    roleTemplateInputRef.current?.click();
+  };
+
+  const onRoleTemplatePicked = async (event) => {
+    const picked = Array.from(event.target.files || []);
+    if (!picked.length) return;
+    const file = picked[0];
+    setUploadingRoleTemplate(true);
+    setError("");
+    try {
+      const contentBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const raw = String(reader.result || "");
+          resolve(raw.includes(",") ? raw.split(",")[1] : "");
+        };
+        reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+        reader.readAsDataURL(file);
+      });
+
+      const response = await fetch(`${API_BASE_URL}/api/templates/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: [{ name: file.name, contentBase64 }]
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to upload selected template file.");
+      const uploadedPath = data?.files?.[0]?.path || "";
+      if (!uploadedPath) {
+        throw new Error("Template uploaded but no file path was returned.");
+      }
+      setJobRoleForm((prev) => ({ ...prev, coverLetterTemplate: uploadedPath }));
+      setFillInfo(`Template selected and uploaded: ${file.name}`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUploadingRoleTemplate(false);
+      event.target.value = "";
+    }
+  };
+
+  const deleteJobRole = async (id) => {
+    setDeletingJobRoleId(id);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/job-roles/${id}`, { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to delete job role.");
+      if (selectedJobRoleId === id) {
+        resetJobRoleForm();
+        setShowJobRoleForm(false);
+      }
+      await loadJobRoles();
+      setFillInfo(`Job role #${id} deleted.`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setDeletingJobRoleId(null);
     }
   };
 
@@ -177,9 +447,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    loadSettings();
     loadApplications();
     loadTemplates();
     loadMasterCv();
+    loadJobRoles();
   }, []);
 
   const startNewForm = () => {
@@ -499,6 +771,7 @@ export default function App() {
             <Button variant={activeMenu === "applications" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("applications")}>2. Applications ({applications.length})</Button>
             <Button variant={activeMenu === "templates" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("templates")}>3. Templates</Button>
             <Button variant={activeMenu === "master-cv" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("master-cv")}>4. Master CV</Button>
+            <Button variant={activeMenu === "job-roles" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("job-roles")}>5. Job Roles ({jobRoles.length})</Button>
           </CardContent>
         </Card>
 
@@ -541,6 +814,7 @@ export default function App() {
                     <div className="space-y-1"><Label>Jobright Link</Label><Input name="jobrightLink" type="url" value={form.jobrightLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Official Job Link</Label><Input name="officialJobLink" type="url" value={form.officialJobLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Company Website Link</Label><Input name="companyWebsiteLink" type="url" value={form.companyWebsiteLink} onChange={updateField} /></div>
+                    <div className="space-y-1"><Label>Export Directory</Label><Input name="exportDirectory" value={form.exportDirectory} onChange={updateField} placeholder="/Users/uranbileg/Documents/JOB/cover_letter" /></div>
                     <div className="space-y-1"><Label>Date*</Label><Input name="date" type="date" value={form.date} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Company Name*</Label><Input name="companyName" value={form.companyName} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Job Title*</Label><Input name="jobTitle" value={form.jobTitle} onChange={updateField} required /></div>
@@ -622,7 +896,54 @@ export default function App() {
                 <Button type="button" variant="secondary" onClick={loadTemplates}>Refresh</Button>
               </CardHeader>
               <CardContent className="h-full overflow-auto space-y-2">
-                <p className="text-sm text-muted-foreground">Templates are loaded from backend templates folder.</p>
+                <p className="text-sm text-muted-foreground">Change template folder path, then browse/upload `.docx` files from your laptop.</p>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label>Template Root Path</Label>
+                    <Input
+                      value={templateRoot}
+                      onChange={(e) => setTemplateRoot(e.target.value)}
+                      placeholder="/Users/uranbileg/Documents/JOB/job_hunting_tool"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Default Export Folder (Word/PDF)</Label>
+                    <Input
+                      value={exportRoot}
+                      onChange={(e) => setExportRoot(e.target.value)}
+                      placeholder="/Users/uranbileg/Documents/JOB/cover_letter"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" onClick={saveSettings} disabled={savingSettings}>
+                    {savingSettings ? "Saving..." : "Save Paths"}
+                  </Button>
+                </div>
+                <div className="space-y-1">
+                  <Label>Browse Template Files (.docx)</Label>
+                  <Input
+                    type="file"
+                    multiple
+                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={(e) => setTemplateFiles(Array.from(e.target.files || []))}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={uploadTemplateFiles}
+                    disabled={uploadingTemplates || templateFiles.length === 0}
+                  >
+                    {uploadingTemplates ? "Uploading..." : "Upload Selected Templates"}
+                  </Button>
+                  {templateFiles.length ? (
+                    <p className="text-sm text-muted-foreground">
+                      {templateFiles.length} file(s) selected
+                    </p>
+                  ) : null}
+                </div>
                 {templates.length === 0 ? <p className="text-sm text-muted-foreground">No template files found.</p> : null}
                 {templates.map((tpl) => (
                   <div key={tpl.path} className="rounded-md border border-border bg-white p-2">
@@ -658,6 +979,173 @@ export default function App() {
                   className="min-h-[60vh]"
                   placeholder="Paste your full master CV text..."
                 />
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {activeMenu === "job-roles" ? (
+            <Card className="min-h-0">
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Job Roles</CardTitle>
+                <Button type="button" variant="secondary" onClick={loadJobRoles} disabled={loadingJobRoles}>
+                  {loadingJobRoles ? "Refreshing..." : "Refresh"}
+                </Button>
+              </CardHeader>
+              <CardContent className="h-full overflow-auto space-y-3">
+                {showJobRoleForm ? (
+                  <div className="rounded-md border border-border bg-white p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold">Form View</h3>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowJobRoleForm(false)}
+                      >
+                        Back To Tree
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" onClick={saveJobRole} disabled={savingJobRole}>
+                        {savingJobRole ? "Saving..." : selectedJobRoleId ? `Update #${selectedJobRoleId}` : "Create"}
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={startCreateJobRole}>
+                        Clear
+                      </Button>
+                      {selectedJobRoleId ? (
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          onClick={() => deleteJobRole(selectedJobRoleId)}
+                          disabled={deletingJobRoleId === selectedJobRoleId}
+                        >
+                          {deletingJobRoleId === selectedJobRoleId ? "Deleting..." : "Delete Current"}
+                        </Button>
+                      ) : null}
+                    </div>
+                    <div className="space-y-1">
+                      <Label>User ID</Label>
+                      <Input value={String(jobRoleForm.userId || 1)} readOnly />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Name*</Label>
+                      <Input
+                        value={jobRoleForm.name}
+                        onChange={(e) =>
+                          setJobRoleForm((prev) => ({ ...prev, name: e.target.value }))
+                        }
+                        placeholder="Data engineer"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Cover Letter Template Path</Label>
+                      <div className="flex flex-wrap gap-2">
+                        <Input
+                          value={jobRoleForm.coverLetterTemplate}
+                          onChange={(e) =>
+                            setJobRoleForm((prev) => ({
+                              ...prev,
+                              coverLetterTemplate: e.target.value
+                            }))
+                          }
+                          placeholder="/Users/uranbileg/Documents/JOB/job_hunting_tool/templates/data_engineer.docx"
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={onBrowseRoleTemplate}
+                          disabled={uploadingRoleTemplate}
+                        >
+                          {uploadingRoleTemplate ? "Uploading..." : "Browse"}
+                        </Button>
+                        <input
+                          ref={roleTemplateInputRef}
+                          type="file"
+                          accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                          className="hidden"
+                          onChange={onRoleTemplatePicked}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-border bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold">Tree View</h3>
+                      <Button type="button" variant="secondary" size="sm" onClick={startCreateJobRole}>
+                        Create
+                      </Button>
+                    </div>
+                    {groupedJobRoles.length === 0 && !showJobRoleForm ? (
+                      <div className="space-y-3">
+                        <p className="text-sm text-muted-foreground">No job roles yet.</p>
+                        <Button type="button" onClick={startCreateJobRole}>Create</Button>
+                      </div>
+                    ) : null}
+                    <div className="space-y-2">
+                      {groupedJobRoles.map(([group, roles]) => (
+                        <details key={group} className="rounded-md border border-border p-2" open>
+                          <summary className="cursor-pointer text-sm font-semibold">
+                            {group} ({roles.length})
+                          </summary>
+                          <div className="mt-2 space-y-2">
+                            {roles.map((role) => (
+                              <div
+                                key={role.id}
+                                className={`flex cursor-pointer flex-col gap-2 rounded border p-2 md:flex-row md:items-start md:justify-between ${
+                                  selectedJobRoleId === role.id
+                                    ? "border-primary bg-secondary/40"
+                                    : "border-border"
+                                }`}
+                                onClick={() => openJobRole(role.id)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    openJobRole(role.id);
+                                  }
+                                }}
+                              >
+                                <div>
+                                  <div className="font-medium">#{role.id} {role.name}</div>
+                                  <p className="text-xs text-muted-foreground break-all">
+                                    {role.coverLetterTemplate || "No template path"}
+                                  </p>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openJobRole(role.id);
+                                    }}
+                                  >
+                                    Open
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      deleteJobRole(role.id);
+                                    }}
+                                    disabled={deletingJobRoleId === role.id}
+                                  >
+                                    {deletingJobRoleId === role.id ? "Deleting..." : "Delete"}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           ) : null}

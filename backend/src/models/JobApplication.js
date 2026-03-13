@@ -5,6 +5,7 @@ export class JobApplication {
     ["jobrightLink", "jobright_link"],
     ["officialJobLink", "official_job_link"],
     ["companyWebsiteLink", "company_website_link"],
+    ["exportDirectory", "export_directory"],
     ["date", "date"],
     ["companyName", "company_name"],
     ["jobTitle", "job_title"],
