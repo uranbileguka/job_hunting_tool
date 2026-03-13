@@ -28,6 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const extractScriptPath = path.resolve(__dirname, "../scripts/extract_job_info.py");
 const exportScriptPath = path.resolve(__dirname, "../scripts/export_cover_letter.py");
+const updateDocxScriptPath = path.resolve(__dirname, "../scripts/update_docx_text.py");
 const pythonCmd =
   process.env.PYTHON_BIN ||
   (existsSync("/opt/anaconda3/bin/python3") ? "/opt/anaconda3/bin/python3" : "python3");
@@ -192,6 +193,47 @@ function runPythonExporter(payload) {
   });
 }
 
+function runPythonDocxUpdater(payload) {
+  return new Promise((resolve, reject) => {
+    const python = spawn(pythonCmd, [updateDocxScriptPath], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    python.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    python.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    python.on("close", (code) => {
+      const raw = stdout.trim();
+      if (code !== 0) {
+        return reject(new Error(raw || stderr || "Python docx updater failed"));
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.error) {
+          return reject(new Error(parsed.error));
+        }
+        return resolve(parsed);
+      } catch {
+        return reject(new Error("Python docx updater returned invalid JSON"));
+      }
+    });
+
+    python.on("error", (error) => reject(error));
+    python.stdin.write(JSON.stringify(payload));
+    python.stdin.end();
+  });
+}
+
 function roleToSlug(role) {
   return String(role || "")
     .toLowerCase()
@@ -318,6 +360,18 @@ async function setUserUrlSettings({ templateRoot, exportRoot }, userId = DEFAULT
 function sanitizeTemplateFilename(fileName) {
   const base = path.basename(String(fileName || "").trim()).replace(/[^\w.\- ]+/g, "_");
   return base.toLowerCase().endsWith(".docx") ? base : "";
+}
+
+function resolveDocxPath(filePath) {
+  const normalized = String(filePath || "").trim();
+  if (!normalized) {
+    throw new Error("filePath is required.");
+  }
+  const resolved = path.resolve(normalized);
+  if (path.extname(resolved).toLowerCase() !== ".docx") {
+    throw new Error("Only .docx files are supported.");
+  }
+  return resolved;
 }
 
 function buildPrompt(payload) {
@@ -1164,6 +1218,33 @@ app.post("/api/templates/upload", async (req, res) => {
   } catch (error) {
     console.error("Template upload failed:", error);
     return res.status(500).json({ error: "Failed to upload template files." });
+  }
+});
+
+app.post("/api/template-file/load", async (req, res) => {
+  try {
+    const filePath = resolveDocxPath(req.body?.filePath);
+    const result = await mammoth.extractRawText({ path: filePath });
+    return res.json({
+      filePath,
+      text: String(result.value || "")
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to load template file text." });
+  }
+});
+
+app.post("/api/template-file/save", async (req, res) => {
+  try {
+    const filePath = resolveDocxPath(req.body?.filePath);
+    const text = String(req.body?.text || "");
+    const result = await runPythonDocxUpdater({ filePath, text });
+    return res.json({
+      saved: true,
+      ...result
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to save template file text." });
   }
 });
 

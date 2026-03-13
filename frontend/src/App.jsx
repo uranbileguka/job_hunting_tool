@@ -77,6 +77,10 @@ export default function App() {
   const [showJobRoleForm, setShowJobRoleForm] = useState(false);
   const [uploadingRoleTemplate, setUploadingRoleTemplate] = useState(false);
   const roleTemplateInputRef = useRef(null);
+  const [roleTemplateText, setRoleTemplateText] = useState("");
+  const [loadingRoleTemplateText, setLoadingRoleTemplateText] = useState(false);
+  const [savingRoleTemplateText, setSavingRoleTemplateText] = useState(false);
+  const [roleTemplateTextDirty, setRoleTemplateTextDirty] = useState(false);
   const [jobRoleForm, setJobRoleForm] = useState({
     userId: 1,
     name: "",
@@ -132,18 +136,10 @@ export default function App() {
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [applications]);
 
-  const groupedJobRoles = useMemo(() => {
-    const groups = new Map();
-    for (const role of jobRoles) {
-      const first = String(role.name || "").trim().charAt(0).toUpperCase() || "#";
-      const key = /[A-Z]/.test(first) ? first : "#";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(role);
-    }
-    return Array.from(groups.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, roles]) => [key, roles.sort((a, b) => a.name.localeCompare(b.name))]);
-  }, [jobRoles]);
+  const sortedJobRoles = useMemo(
+    () => [...jobRoles].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""))),
+    [jobRoles]
+  );
 
   const updateField = (event) => {
     const { name, value } = event.target;
@@ -303,6 +299,8 @@ export default function App() {
       name: "",
       coverLetterTemplate: ""
     });
+    setRoleTemplateText("");
+    setRoleTemplateTextDirty(false);
   };
 
   const startCreateJobRole = () => {
@@ -322,6 +320,8 @@ export default function App() {
         name: String(role.name || ""),
         coverLetterTemplate: String(role.coverLetterTemplate || "")
       });
+      setRoleTemplateText("");
+      setRoleTemplateTextDirty(false);
       setShowJobRoleForm(true);
       setFillInfo(`Loaded job role #${id}.`);
     } catch (requestError) {
@@ -398,6 +398,8 @@ export default function App() {
         throw new Error("Template uploaded but no file path was returned.");
       }
       setJobRoleForm((prev) => ({ ...prev, coverLetterTemplate: uploadedPath }));
+      setRoleTemplateText("");
+      setRoleTemplateTextDirty(false);
       setFillInfo(`Template selected and uploaded: ${file.name}`);
     } catch (requestError) {
       setError(requestError.message);
@@ -406,6 +408,70 @@ export default function App() {
       event.target.value = "";
     }
   };
+
+  const loadRoleTemplateFile = async () => {
+    const filePath = String(jobRoleForm.coverLetterTemplate || "").trim();
+    if (!filePath) {
+      setError("Cover Letter Template Path is required.");
+      return;
+    }
+    setLoadingRoleTemplateText(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/template-file/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load file text.");
+      setRoleTemplateText(String(data.text || ""));
+      setRoleTemplateTextDirty(false);
+      setFillInfo("Template file loaded.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingRoleTemplateText(false);
+    }
+  };
+
+  const saveRoleTemplateFile = async (silent = false) => {
+    const filePath = String(jobRoleForm.coverLetterTemplate || "").trim();
+    if (!filePath) {
+      if (!silent) setError("Cover Letter Template Path is required.");
+      return;
+    }
+    setSavingRoleTemplateText(true);
+    if (!silent) setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/template-file/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filePath,
+          text: roleTemplateText
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save file text.");
+      setRoleTemplateTextDirty(false);
+      if (!silent) setFillInfo("Word file updated.");
+    } catch (requestError) {
+      if (!silent) setError(requestError.message);
+    } finally {
+      setSavingRoleTemplateText(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!roleTemplateTextDirty) return;
+    const filePath = String(jobRoleForm.coverLetterTemplate || "").trim();
+    if (!filePath) return;
+    const timer = setTimeout(() => {
+      saveRoleTemplateFile(true);
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [roleTemplateText, roleTemplateTextDirty, jobRoleForm.coverLetterTemplate]);
 
   const deleteJobRole = async (id) => {
     setDeletingJobRoleId(id);
@@ -1058,6 +1124,22 @@ export default function App() {
                         >
                           {uploadingRoleTemplate ? "Uploading..." : "Browse"}
                         </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={loadRoleTemplateFile}
+                          disabled={loadingRoleTemplateText || uploadingRoleTemplate}
+                        >
+                          {loadingRoleTemplateText ? "Loading..." : "Load File"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => saveRoleTemplateFile(false)}
+                          disabled={savingRoleTemplateText || loadingRoleTemplateText}
+                        >
+                          {savingRoleTemplateText ? "Updating..." : "Update File"}
+                        </Button>
                         <input
                           ref={roleTemplateInputRef}
                           type="file"
@@ -1066,6 +1148,21 @@ export default function App() {
                           onChange={onRoleTemplatePicked}
                         />
                       </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Template File Text</Label>
+                      <Textarea
+                        value={roleTemplateText}
+                        onChange={(e) => {
+                          setRoleTemplateText(e.target.value);
+                          setRoleTemplateTextDirty(true);
+                        }}
+                        rows={12}
+                        placeholder="Click Load File to view template text. Editing this area updates the Word file."
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Changes auto-save to the Word file after you pause typing.
+                      </p>
                     </div>
                   </div>
                 ) : (
@@ -1076,72 +1173,63 @@ export default function App() {
                         Create
                       </Button>
                     </div>
-                    {groupedJobRoles.length === 0 && !showJobRoleForm ? (
+                    {sortedJobRoles.length === 0 && !showJobRoleForm ? (
                       <div className="space-y-3">
                         <p className="text-sm text-muted-foreground">No job roles yet.</p>
                         <Button type="button" onClick={startCreateJobRole}>Create</Button>
                       </div>
                     ) : null}
                     <div className="space-y-2">
-                      {groupedJobRoles.map(([group, roles]) => (
-                        <details key={group} className="rounded-md border border-border p-2" open>
-                          <summary className="cursor-pointer text-sm font-semibold">
-                            {group} ({roles.length})
-                          </summary>
-                          <div className="mt-2 space-y-2">
-                            {roles.map((role) => (
-                              <div
-                                key={role.id}
-                                className={`flex cursor-pointer flex-col gap-2 rounded border p-2 md:flex-row md:items-start md:justify-between ${
-                                  selectedJobRoleId === role.id
-                                    ? "border-primary bg-secondary/40"
-                                    : "border-border"
-                                }`}
-                                onClick={() => openJobRole(role.id)}
-                                role="button"
-                                tabIndex={0}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    openJobRole(role.id);
-                                  }
-                                }}
-                              >
-                                <div>
-                                  <div className="font-medium">#{role.id} {role.name}</div>
-                                  <p className="text-xs text-muted-foreground break-all">
-                                    {role.coverLetterTemplate || "No template path"}
-                                  </p>
-                                </div>
-                                <div className="flex gap-2">
-                                  <Button
-                                    type="button"
-                                    variant="secondary"
-                                    size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openJobRole(role.id);
-                                    }}
-                                  >
-                                    Open
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="destructive"
-                                    size="sm"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      deleteJobRole(role.id);
-                                    }}
-                                    disabled={deletingJobRoleId === role.id}
-                                  >
-                                    {deletingJobRoleId === role.id ? "Deleting..." : "Delete"}
-                                  </Button>
-                                </div>
-                              </div>
-                            ))}
+                      {sortedJobRoles.map((role) => (
+                        <div
+                          key={role.id}
+                          className={`flex cursor-pointer flex-col gap-2 rounded border p-2 md:flex-row md:items-start md:justify-between ${
+                            selectedJobRoleId === role.id
+                              ? "border-primary bg-secondary/40"
+                              : "border-border"
+                          }`}
+                          onClick={() => openJobRole(role.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              openJobRole(role.id);
+                            }
+                          }}
+                        >
+                          <div>
+                            <div className="font-medium">#{role.id} {role.name}</div>
+                            <p className="text-xs text-muted-foreground break-all">
+                              {role.coverLetterTemplate || "No template path"}
+                            </p>
                           </div>
-                        </details>
+                          <div className="flex gap-2">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openJobRole(role.id);
+                              }}
+                            >
+                              Open
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteJobRole(role.id);
+                              }}
+                              disabled={deletingJobRoleId === role.id}
+                            >
+                              {deletingJobRoleId === role.id ? "Deleting..." : "Delete"}
+                            </Button>
+                          </div>
+                        </div>
                       ))}
                     </div>
                   </div>
