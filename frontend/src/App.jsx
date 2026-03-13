@@ -34,7 +34,6 @@ function createInitialForm() {
     jobrightLink: "",
     officialJobLink: "",
     companyWebsiteLink: "",
-    exportDirectory: "",
     date: getTodayLocalDate(),
     companyName: "",
     jobTitle: "",
@@ -64,7 +63,8 @@ export default function App() {
   const [applications, setApplications] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [templateRoot, setTemplateRoot] = useState("");
-  const [exportRoot, setExportRoot] = useState("");
+  const [wordExportRoot, setWordExportRoot] = useState("");
+  const [pdfExportRoot, setPdfExportRoot] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [templateFiles, setTemplateFiles] = useState([]);
   const [uploadingTemplates, setUploadingTemplates] = useState(false);
@@ -80,7 +80,6 @@ export default function App() {
   const [roleTemplateText, setRoleTemplateText] = useState("");
   const [loadingRoleTemplateText, setLoadingRoleTemplateText] = useState(false);
   const [savingRoleTemplateText, setSavingRoleTemplateText] = useState(false);
-  const [roleTemplateTextDirty, setRoleTemplateTextDirty] = useState(false);
   const [jobRoleForm, setJobRoleForm] = useState({
     userId: 1,
     name: "",
@@ -180,11 +179,8 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to load settings.");
       setTemplateRoot(String(data.templateRoot || ""));
-      setExportRoot(String(data.exportRoot || ""));
-      setForm((prev) => ({
-        ...prev,
-        exportDirectory: prev.exportDirectory || String(data.exportRoot || "")
-      }));
+      setWordExportRoot(String(data.wordExportRoot || data.exportRoot || ""));
+      setPdfExportRoot(String(data.pdfExportRoot || data.exportRoot || ""));
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -199,19 +195,39 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           templateRoot,
-          exportRoot
+          wordExportRoot,
+          pdfExportRoot
         })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to save settings.");
       setTemplateRoot(String(data.templateRoot || ""));
-      setExportRoot(String(data.exportRoot || ""));
+      setWordExportRoot(String(data.wordExportRoot || ""));
+      setPdfExportRoot(String(data.pdfExportRoot || ""));
       setFillInfo("Template/Export settings saved.");
       await loadTemplates();
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const browseExportDirectory = async (target) => {
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/system/pick-directory`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to pick directory.");
+      const picked = String(data.directoryPath || "").trim();
+      if (!picked) return;
+      if (target === "word") {
+        setWordExportRoot(picked);
+      } else {
+        setPdfExportRoot(picked);
+      }
+    } catch (requestError) {
+      setError(requestError.message);
     }
   };
 
@@ -300,7 +316,6 @@ export default function App() {
       coverLetterTemplate: ""
     });
     setRoleTemplateText("");
-    setRoleTemplateTextDirty(false);
   };
 
   const startCreateJobRole = () => {
@@ -321,7 +336,6 @@ export default function App() {
         coverLetterTemplate: String(role.coverLetterTemplate || "")
       });
       setRoleTemplateText("");
-      setRoleTemplateTextDirty(false);
       setShowJobRoleForm(true);
       setFillInfo(`Loaded job role #${id}.`);
     } catch (requestError) {
@@ -363,25 +377,65 @@ export default function App() {
     }
   };
 
-  const onBrowseRoleTemplate = () => {
-    roleTemplateInputRef.current?.click();
+  const onBrowseRoleTemplate = async () => {
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/system/pick-docx`);
+      const data = await response.json();
+      if (response.ok && data?.filePath) {
+        setJobRoleForm((prev) => ({ ...prev, coverLetterTemplate: String(data.filePath) }));
+        setRoleTemplateText("");
+        setFillInfo(`Template selected: ${data.filePath}`);
+        return;
+      }
+    } catch {
+      // Fallback below.
+    }
+
+    if (roleTemplateInputRef.current) {
+      roleTemplateInputRef.current.value = "";
+      roleTemplateInputRef.current.click();
+    }
   };
 
   const onRoleTemplatePicked = async (event) => {
     const picked = Array.from(event.target.files || []);
     if (!picked.length) return;
     const file = picked[0];
+    const localPath =
+      typeof file.path === "string" && file.path.trim().toLowerCase().endsWith(".docx")
+        ? file.path.trim()
+        : "";
+
+    if (localPath) {
+      setJobRoleForm((prev) => ({ ...prev, coverLetterTemplate: localPath }));
+      setRoleTemplateText("");
+      setFillInfo(`Template selected: ${localPath}`);
+      event.target.value = "";
+      return;
+    }
+
     setUploadingRoleTemplate(true);
     setError("");
     try {
       const contentBase64 = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
-          const raw = String(reader.result || "");
-          resolve(raw.includes(",") ? raw.split(",")[1] : "");
+          try {
+            const bytes = new Uint8Array(reader.result);
+            let binary = "";
+            const chunkSize = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+              const chunk = bytes.subarray(i, i + chunkSize);
+              binary += String.fromCharCode(...chunk);
+            }
+            resolve(btoa(binary));
+          } catch {
+            reject(new Error(`Failed to encode ${file.name}`));
+          }
         };
         reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-        reader.readAsDataURL(file);
+        reader.readAsArrayBuffer(file);
       });
 
       const response = await fetch(`${API_BASE_URL}/api/templates/upload`, {
@@ -393,13 +447,12 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to upload selected template file.");
-      const uploadedPath = data?.files?.[0]?.path || "";
+      const uploadedPath = String(data?.filePath || data?.files?.[0]?.path || "").trim();
       if (!uploadedPath) {
         throw new Error("Template uploaded but no file path was returned.");
       }
       setJobRoleForm((prev) => ({ ...prev, coverLetterTemplate: uploadedPath }));
       setRoleTemplateText("");
-      setRoleTemplateTextDirty(false);
       setFillInfo(`Template selected and uploaded: ${file.name}`);
     } catch (requestError) {
       setError(requestError.message);
@@ -426,7 +479,6 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to load file text.");
       setRoleTemplateText(String(data.text || ""));
-      setRoleTemplateTextDirty(false);
       setFillInfo("Template file loaded.");
     } catch (requestError) {
       setError(requestError.message);
@@ -454,7 +506,9 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to save file text.");
-      setRoleTemplateTextDirty(false);
+      if (typeof data.text === "string") {
+        setRoleTemplateText(data.text);
+      }
       if (!silent) setFillInfo("Word file updated.");
     } catch (requestError) {
       if (!silent) setError(requestError.message);
@@ -462,16 +516,6 @@ export default function App() {
       setSavingRoleTemplateText(false);
     }
   };
-
-  useEffect(() => {
-    if (!roleTemplateTextDirty) return;
-    const filePath = String(jobRoleForm.coverLetterTemplate || "").trim();
-    if (!filePath) return;
-    const timer = setTimeout(() => {
-      saveRoleTemplateFile(true);
-    }, 900);
-    return () => clearTimeout(timer);
-  }, [roleTemplateText, roleTemplateTextDirty, jobRoleForm.coverLetterTemplate]);
 
   const deleteJobRole = async (id) => {
     setDeletingJobRoleId(id);
@@ -880,7 +924,6 @@ export default function App() {
                     <div className="space-y-1"><Label>Jobright Link</Label><Input name="jobrightLink" type="url" value={form.jobrightLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Official Job Link</Label><Input name="officialJobLink" type="url" value={form.officialJobLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Company Website Link</Label><Input name="companyWebsiteLink" type="url" value={form.companyWebsiteLink} onChange={updateField} /></div>
-                    <div className="space-y-1"><Label>Export Directory</Label><Input name="exportDirectory" value={form.exportDirectory} onChange={updateField} placeholder="/Users/uranbileg/Documents/JOB/cover_letter" /></div>
                     <div className="space-y-1"><Label>Date*</Label><Input name="date" type="date" value={form.date} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Company Name*</Label><Input name="companyName" value={form.companyName} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Job Title*</Label><Input name="jobTitle" value={form.jobTitle} onChange={updateField} required /></div>
@@ -962,23 +1005,41 @@ export default function App() {
                 <Button type="button" variant="secondary" onClick={loadTemplates}>Refresh</Button>
               </CardHeader>
               <CardContent className="h-full overflow-auto space-y-2">
-                <p className="text-sm text-muted-foreground">Change template folder path, then browse/upload `.docx` files from your laptop.</p>
+                <p className="text-sm text-muted-foreground">Set default export folders for generated Word and PDF files.</p>
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                   <div className="space-y-1">
-                    <Label>Template Root Path</Label>
-                    <Input
-                      value={templateRoot}
-                      onChange={(e) => setTemplateRoot(e.target.value)}
-                      placeholder="/Users/uranbileg/Documents/JOB/job_hunting_tool"
-                    />
+                    <Label>Default Export Folder (Word)</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Input
+                        value={wordExportRoot}
+                        onChange={(e) => setWordExportRoot(e.target.value)}
+                        placeholder="/Users/uranbileg/Documents/JOB/cover_letter/word"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => browseExportDirectory("word")}
+                      >
+                        Browse
+                      </Button>
+                    </div>
                   </div>
                   <div className="space-y-1">
-                    <Label>Default Export Folder (Word/PDF)</Label>
-                    <Input
-                      value={exportRoot}
-                      onChange={(e) => setExportRoot(e.target.value)}
-                      placeholder="/Users/uranbileg/Documents/JOB/cover_letter"
-                    />
+                    <Label>Default Export Folder (PDF)</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Input
+                        value={pdfExportRoot}
+                        onChange={(e) => setPdfExportRoot(e.target.value)}
+                        placeholder="/Users/uranbileg/Documents/JOB/cover_letter/pdf"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => browseExportDirectory("pdf")}
+                      >
+                        Browse
+                      </Button>
+                    </div>
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -986,37 +1047,6 @@ export default function App() {
                     {savingSettings ? "Saving..." : "Save Paths"}
                   </Button>
                 </div>
-                <div className="space-y-1">
-                  <Label>Browse Template Files (.docx)</Label>
-                  <Input
-                    type="file"
-                    multiple
-                    accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    onChange={(e) => setTemplateFiles(Array.from(e.target.files || []))}
-                  />
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={uploadTemplateFiles}
-                    disabled={uploadingTemplates || templateFiles.length === 0}
-                  >
-                    {uploadingTemplates ? "Uploading..." : "Upload Selected Templates"}
-                  </Button>
-                  {templateFiles.length ? (
-                    <p className="text-sm text-muted-foreground">
-                      {templateFiles.length} file(s) selected
-                    </p>
-                  ) : null}
-                </div>
-                {templates.length === 0 ? <p className="text-sm text-muted-foreground">No template files found.</p> : null}
-                {templates.map((tpl) => (
-                  <div key={tpl.path} className="rounded-md border border-border bg-white p-2">
-                    <div className="font-medium">{tpl.name}</div>
-                    <div className="text-xs text-muted-foreground break-all">{tpl.path}</div>
-                  </div>
-                ))}
               </CardContent>
             </Card>
           ) : null}
@@ -1153,15 +1183,12 @@ export default function App() {
                       <Label>Template File Text</Label>
                       <Textarea
                         value={roleTemplateText}
-                        onChange={(e) => {
-                          setRoleTemplateText(e.target.value);
-                          setRoleTemplateTextDirty(true);
-                        }}
+                        onChange={(e) => setRoleTemplateText(e.target.value)}
                         rows={12}
                         placeholder="Click Load File to view template text. Editing this area updates the Word file."
                       />
                       <p className="text-xs text-muted-foreground">
-                        Changes auto-save to the Word file after you pause typing.
+                        Click Update File to write this text back into the Word file.
                       </p>
                     </div>
                   </div>

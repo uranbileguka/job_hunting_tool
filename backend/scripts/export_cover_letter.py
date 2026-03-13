@@ -71,13 +71,19 @@ def main() -> int:
         return 1
 
     template_path = Path(payload.get("templatePath", "")).expanduser().resolve()
-    output_dir = Path(payload.get("outputDir", "")).expanduser().resolve()
+    output_dir_word = Path(
+        payload.get("outputDirWord") or payload.get("outputDir") or ""
+    ).expanduser().resolve()
+    output_dir_pdf = Path(
+        payload.get("outputDirPdf") or payload.get("outputDirWord") or payload.get("outputDir") or ""
+    ).expanduser().resolve()
 
     if not template_path.exists():
         print(json.dumps({"error": f"Template file not found: {template_path}"}, ensure_ascii=True))
         return 1
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir_word.mkdir(parents=True, exist_ok=True)
+    output_dir_pdf.mkdir(parents=True, exist_ok=True)
 
     date_value = (payload.get("date") or "").strip()
     company = (payload.get("companyName") or "").strip()
@@ -139,10 +145,10 @@ def main() -> int:
     company_clean = clean_filename(company)
     job_clean = clean_filename(job_title)
     filename = f"Uranbileg_CL_{company_clean}_{job_clean}.docx"
-    save_path = output_dir / filename
+    save_path = output_dir_word / filename
     doc.save(str(save_path))
 
-    pdf_path = save_path.with_suffix(".pdf")
+    pdf_path = (output_dir_pdf / filename).with_suffix(".pdf")
     pdf_created = False
     pdf_error = ""
 
@@ -157,7 +163,7 @@ def main() -> int:
                     "--convert-to",
                     "pdf",
                     "--outdir",
-                    str(output_dir),
+                    str(output_dir_pdf),
                     str(save_path),
                 ],
                 check=True,

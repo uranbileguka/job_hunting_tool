@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import pg from "pg";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { constants as fsConstants, existsSync } from "node:fs";
 import path from "node:path";
@@ -234,6 +234,62 @@ function runPythonDocxUpdater(payload) {
   });
 }
 
+function runFinderDocxPicker() {
+  return new Promise((resolve, reject) => {
+    if (process.platform !== "darwin") {
+      return reject(new Error("Native Finder picker is only available on macOS."));
+    }
+
+    const script = [
+      'set pickedFile to choose file with prompt "Select a .docx template file"',
+      "POSIX path of pickedFile"
+    ].join("\n");
+
+    execFile("osascript", ["-e", script], (error, stdout, stderr) => {
+      if (error) {
+        const msg = String(stderr || error.message || "").trim();
+        // User canceled dialog.
+        if (/user canceled/i.test(msg)) {
+          return resolve("");
+        }
+        return reject(new Error(msg || "Failed to open Finder file picker."));
+      }
+      const picked = String(stdout || "").trim();
+      if (!picked) return resolve("");
+      if (path.extname(picked).toLowerCase() !== ".docx") {
+        return reject(new Error("Please select a .docx file."));
+      }
+      resolve(path.resolve(picked));
+    });
+  });
+}
+
+function runFinderDirectoryPicker() {
+  return new Promise((resolve, reject) => {
+    if (process.platform !== "darwin") {
+      return reject(new Error("Native directory picker is only available on macOS."));
+    }
+
+    const script = [
+      'set pickedFolder to choose folder with prompt "Select a folder"',
+      "POSIX path of pickedFolder"
+    ].join("\n");
+
+    execFile("osascript", ["-e", script], (error, stdout, stderr) => {
+      if (error) {
+        const msg = String(stderr || error.message || "").trim();
+        if (/user canceled/i.test(msg)) {
+          return resolve("");
+        }
+        return reject(new Error(msg || "Failed to open Finder folder picker."));
+      }
+      const picked = String(stdout || "").trim();
+      if (!picked) return resolve("");
+      resolve(path.resolve(picked));
+    });
+  });
+}
+
 function roleToSlug(role) {
   return String(role || "")
     .toLowerCase()
@@ -333,7 +389,9 @@ async function ensureUserUrlsRow(userId = DEFAULT_USER_ID) {
 
 async function getUserUrlSetting(key, userId = DEFAULT_USER_ID) {
   if (!dbReady) return "";
-  if (!["template_root", "export_root"].includes(key)) return "";
+  if (!["template_root", "export_root", "word_export_root", "pdf_export_root"].includes(key)) {
+    return "";
+  }
   await ensureUserUrlsRow(userId);
   const result = await dbPool.query(
     `SELECT ${key} AS value FROM user_urls WHERE user_id = $1 LIMIT 1`,
@@ -342,7 +400,10 @@ async function getUserUrlSetting(key, userId = DEFAULT_USER_ID) {
   return String(result.rows?.[0]?.value || "").trim();
 }
 
-async function setUserUrlSettings({ templateRoot, exportRoot }, userId = DEFAULT_USER_ID) {
+async function setUserUrlSettings(
+  { templateRoot, exportRoot, wordExportRoot, pdfExportRoot },
+  userId = DEFAULT_USER_ID
+) {
   if (!dbReady) return;
   await ensureUserUrlsRow(userId);
   await dbPool.query(
@@ -350,10 +411,18 @@ async function setUserUrlSettings({ templateRoot, exportRoot }, userId = DEFAULT
     UPDATE user_urls
     SET template_root = $1,
         export_root = $2,
+        word_export_root = $3,
+        pdf_export_root = $4,
         updated_at = NOW()
-    WHERE user_id = $3
+    WHERE user_id = $5
   `,
-    [String(templateRoot || ""), String(exportRoot || ""), userId]
+    [
+      String(templateRoot || ""),
+      String(exportRoot || ""),
+      String(wordExportRoot || ""),
+      String(pdfExportRoot || ""),
+      userId
+    ]
   );
 }
 
@@ -1159,7 +1228,11 @@ app.get("/api/settings", async (_req, res) => {
       process.env.TEMPLATE_ROOT ||
       process.cwd();
     const exportRoot = await getUserUrlSetting("export_root", DEFAULT_USER_ID);
-    return res.json({ userId: DEFAULT_USER_ID, templateRoot, exportRoot });
+    const wordExportRoot =
+      (await getUserUrlSetting("word_export_root", DEFAULT_USER_ID)) || exportRoot;
+    const pdfExportRoot =
+      (await getUserUrlSetting("pdf_export_root", DEFAULT_USER_ID)) || exportRoot;
+    return res.json({ userId: DEFAULT_USER_ID, templateRoot, exportRoot, wordExportRoot, pdfExportRoot });
   } catch (error) {
     return res.status(500).json({ error: "Failed to load settings." });
   }
@@ -1174,8 +1247,20 @@ app.put("/api/settings", async (req, res) => {
     }
     const templateRoot = normalizeDirectory(req.body?.templateRoot);
     const exportRoot = normalizeDirectory(req.body?.exportRoot);
-    await setUserUrlSettings({ templateRoot, exportRoot }, DEFAULT_USER_ID);
-    return res.json({ saved: true, userId: DEFAULT_USER_ID, templateRoot, exportRoot });
+    const wordExportRoot = normalizeDirectory(req.body?.wordExportRoot);
+    const pdfExportRoot = normalizeDirectory(req.body?.pdfExportRoot);
+    await setUserUrlSettings(
+      { templateRoot, exportRoot, wordExportRoot, pdfExportRoot },
+      DEFAULT_USER_ID
+    );
+    return res.json({
+      saved: true,
+      userId: DEFAULT_USER_ID,
+      templateRoot,
+      exportRoot,
+      wordExportRoot,
+      pdfExportRoot
+    });
   } catch (error) {
     return res.status(500).json({ error: "Failed to save settings." });
   }
@@ -1213,6 +1298,7 @@ app.post("/api/templates/upload", async (req, res) => {
     return res.json({
       uploaded: saved.length,
       files: saved,
+      filePath: saved[0]?.path || "",
       templatesDir
     });
   } catch (error) {
@@ -1239,12 +1325,32 @@ app.post("/api/template-file/save", async (req, res) => {
     const filePath = resolveDocxPath(req.body?.filePath);
     const text = String(req.body?.text || "");
     const result = await runPythonDocxUpdater({ filePath, text });
+    const reloaded = await mammoth.extractRawText({ path: filePath });
     return res.json({
       saved: true,
+      text: String(reloaded.value || ""),
       ...result
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || "Failed to save template file text." });
+  }
+});
+
+app.get("/api/system/pick-docx", async (_req, res) => {
+  try {
+    const filePath = await runFinderDocxPicker();
+    return res.json({ filePath });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to pick file." });
+  }
+});
+
+app.get("/api/system/pick-directory", async (_req, res) => {
+  try {
+    const directoryPath = await runFinderDirectoryPicker();
+    return res.json({ directoryPath });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to pick directory." });
   }
 });
 
@@ -1461,20 +1567,22 @@ app.post("/api/export-cover-letter", async (req, res) => {
 
     const templatePath = await resolveTemplatePath(req.body.role);
     const exportRootSetting = await getUserUrlSetting("export_root");
-    const outputDir =
-      normalizeDirectory(req.body.exportDirectory) ||
-      exportRootSetting ||
-      path.resolve(__dirname, "../../..");
+    const wordOutputDir =
+      (await getUserUrlSetting("word_export_root")) || exportRootSetting || path.resolve(__dirname, "../../..");
+    const pdfOutputDir =
+      (await getUserUrlSetting("pdf_export_root")) || exportRootSetting || wordOutputDir;
 
     const result = await runPythonExporter({
       ...req.body,
       templatePath,
-      outputDir
+      outputDirWord: wordOutputDir,
+      outputDirPdf: pdfOutputDir
     });
 
     return res.json({
       templatePath,
-      outputDir,
+      wordOutputDir,
+      pdfOutputDir,
       ...result
     });
   } catch (error) {

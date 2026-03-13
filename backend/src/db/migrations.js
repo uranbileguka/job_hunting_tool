@@ -185,5 +185,21 @@ export const migrations = [
       CREATE UNIQUE INDEX IF NOT EXISTS idx_job_roles_user_name
         ON job_roles(user_id, lower(name));
     `
+  },
+  {
+    id: "011_add_word_pdf_export_roots_to_user_urls",
+    sql: `
+      ALTER TABLE user_urls
+      ADD COLUMN IF NOT EXISTS word_export_root TEXT NOT NULL DEFAULT '';
+
+      ALTER TABLE user_urls
+      ADD COLUMN IF NOT EXISTS pdf_export_root TEXT NOT NULL DEFAULT '';
+
+      UPDATE user_urls
+      SET
+        word_export_root = COALESCE(NULLIF(word_export_root, ''), export_root),
+        pdf_export_root = COALESCE(NULLIF(pdf_export_root, ''), export_root)
+      WHERE COALESCE(export_root, '') <> '';
+    `
   }
 ];
