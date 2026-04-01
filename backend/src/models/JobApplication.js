@@ -1,4 +1,6 @@
 export class JobApplication {
+  static VALID_STATUSES = new Set(["in_process", "applied"]);
+
   static fieldMap = [
     ["role", "role"],
     ["linkedinLink", "linkedin_link"],
@@ -24,7 +26,8 @@ export class JobApplication {
     ["paragraph4", "paragraph_4"],
     ["paragraph5", "paragraph_5"],
     ["responsibilities", "responsibilities"],
-    ["qualifications", "qualifications"]
+    ["qualifications", "qualifications"],
+    ["status", "status"]
   ];
 
   static dbColumns = JobApplication.fieldMap.map(([, db]) => db);
@@ -34,6 +37,10 @@ export class JobApplication {
     for (const [apiField] of JobApplication.fieldMap) {
       clean[apiField] = String(payload[apiField] || "");
     }
+    const normalizedStatus = String(payload.status || "").trim().toLowerCase();
+    clean.status = JobApplication.VALID_STATUSES.has(normalizedStatus)
+      ? normalizedStatus
+      : "in_process";
     return clean;
   }
 

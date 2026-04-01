@@ -215,12 +215,12 @@ def recursive_collect(obj: Any, target_keys: set, out: List[str]) -> None:
 
 
 def parse_section_list_items(soup: bs4.BeautifulSoup, section_names: List[str]) -> List[str]:
-    target = set(name.lower() for name in section_names)
+    target = [name.lower() for name in section_names]
     items: List[str] = []
 
     for heading in soup.find_all(["h1", "h2", "h3", "h4", "strong", "b", "p", "span"]):
         title = clean_text(heading.get_text(" ", strip=True)).lower().rstrip(":")
-        if title not in target:
+        if not any(t in title for t in target):
             continue
 
         node = heading.find_next_sibling()
@@ -244,12 +244,12 @@ def parse_section_list_items(soup: bs4.BeautifulSoup, section_names: List[str]) 
 
 
 def parse_section_paragraphs(soup: bs4.BeautifulSoup, section_names: List[str]) -> List[str]:
-    target = set(name.lower() for name in section_names)
+    target = [name.lower() for name in section_names]
     paragraphs: List[str] = []
 
     for heading in soup.find_all(["h1", "h2", "h3", "h4", "strong", "b", "p", "span"]):
         title = clean_text(heading.get_text(" ", strip=True)).lower().rstrip(":")
-        if title not in target:
+        if not any(t in title for t in target):
             continue
 
         node = heading.find_next_sibling()
@@ -318,8 +318,8 @@ def extract_from_embedded_json(soup: bs4.BeautifulSoup) -> Dict[str, Any]:
         "jobTitle": next((x for x in clean_list(job_title_candidates) if 3 <= len(x) <= 120 and "http" not in x.lower()), ""),
         "companyName": next((x for x in clean_list(company_candidates) if 2 <= len(x) <= 120 and "http" not in x.lower()), ""),
         "location": next((x for x in clean_list(location_candidates) if 2 <= len(x) <= 120), ""),
-        "responsibilities": clean_list(responsibilities)[:12],
-        "qualifications": clean_list(qualifications)[:12],
+        "responsibilities": clean_list(responsibilities),
+        "qualifications": clean_list(qualifications),
         "companyWebsiteLink": next((x for x in clean_list(website_candidates) if x.startswith("http")), ""),
         "companyOverview": next((x for x in clean_list(overview_candidates) if 30 <= len(x) <= 450), ""),
     }
@@ -429,7 +429,7 @@ Return fields strictly based on provided text.
 Rules:
 - Use exact wording when possible.
 - If unknown, return empty string for text fields and [] for lists.
-- Responsibilities and qualifications should be concise, deduplicated, and factual.
+- Responsibilities and qualifications should include all distinct points, deduplicated, and factual.
 
 TEXT:
 {context}
@@ -585,13 +585,37 @@ def extract_job_fields(url: str) -> dict:
 
     embedded = extract_from_embedded_json(soup)
 
-    html_resp = parse_section_list_items(soup, ["responsibilities", "what you'll do", "what you will do"])
+    html_resp = parse_section_list_items(
+        soup,
+        [
+            "key responsibilities",
+            "responsibilities",
+            "what you'll do",
+            "what you will do",
+            "duties",
+            "day-to-day",
+        ],
+    )
     html_qual = parse_section_list_items(
         soup,
-        ["qualifications", "requirements", "skills", "minimum qualifications", "preferred qualifications"],
+        [
+            "qualifications",
+            "requirements",
+            "skills",
+            "minimum qualifications",
+            "preferred qualifications",
+            "what you bring",
+        ],
     )
     regex_resp = extract_list_from_html_section(
-        html, ["Responsibilities", "What you'll do", "What you will do"]
+        html,
+        [
+            "Key Responsibilities",
+            "Responsibilities",
+            "What you'll do",
+            "What you will do",
+            "Duties",
+        ],
     )
     regex_qual = extract_list_from_html_section(
         html,
@@ -601,6 +625,7 @@ def extract_job_fields(url: str) -> dict:
             "Skills",
             "Minimum Qualifications",
             "Preferred Qualifications",
+            "What You Bring",
         ],
     )
     html_overview = parse_section_paragraphs(soup, ["company overview", "about company", "about", "overview"])
@@ -654,8 +679,8 @@ def extract_job_fields(url: str) -> dict:
         "jobTitle": fields.job_title,
         "companyName": fields.company_name,
         "location": fields.location,
-        "responsibilities": "\n".join(f"- {x}" for x in fields.responsibilities[:12]),
-        "qualifications": "\n".join(f"- {x}" for x in fields.qualifications[:12]),
+        "responsibilities": "\n".join(f"- {x}" for x in fields.responsibilities),
+        "qualifications": "\n".join(f"- {x}" for x in fields.qualifications),
         "companyInformation": company_information,
         "companyWebsiteLink": company_website_link,
     }

@@ -201,5 +201,37 @@ export const migrations = [
         pdf_export_root = COALESCE(NULLIF(pdf_export_root, ''), export_root)
       WHERE COALESCE(export_root, '') <> '';
     `
+  },
+  {
+    id: "012_add_cv_text_to_job_roles",
+    sql: `
+      ALTER TABLE job_roles
+      ADD COLUMN IF NOT EXISTS cv_text TEXT NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "013_add_status_to_job_application",
+    sql: `
+      ALTER TABLE job_application
+      ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'in_process';
+
+      UPDATE job_application
+      SET status = 'in_process'
+      WHERE status IS NULL OR status = '';
+    `
+  },
+  {
+    id: "014_add_applied_date_to_job_application",
+    sql: `
+      ALTER TABLE job_application
+      ADD COLUMN IF NOT EXISTS applied_date TEXT NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "015_add_cv_template_to_job_roles",
+    sql: `
+      ALTER TABLE job_roles
+      ADD COLUMN IF NOT EXISTS cv_template TEXT NOT NULL DEFAULT '';
+    `
   }
 ];

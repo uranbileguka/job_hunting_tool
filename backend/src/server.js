@@ -33,18 +33,6 @@ const pythonCmd =
   process.env.PYTHON_BIN ||
   (existsSync("/opt/anaconda3/bin/python3") ? "/opt/anaconda3/bin/python3" : "python3");
 
-const roleTemplateEnvMap = {
-  "Software engineering intern": "TEMPLATE_SOFTWARE_ENGINEERING_INTERN",
-  "Software engineer": "TEMPLATE_SOFTWARE_ENGINEER",
-  "Data engineer": "TEMPLATE_DATA_ENGINEER",
-  "Data engineering intern": "TEMPLATE_DATA_ENGINEERING_INTERN",
-  "Ai engineer": "TEMPLATE_AI_ENGINEER",
-  "Ai engineer intern": "TEMPLATE_AI_ENGINEER_INTERN",
-  "ERP consultant": "TEMPLATE_ERP_CONSULTANT",
-  "ERP consulatnt inteneer": "TEMPLATE_ERP_CONSULATNT_INTENEER",
-  "solution engineer": "TEMPLATE_SOLUTION_ENGINEER"
-};
-
 const dbPool = new Pool({
   host: process.env.POSTGRES_HOST || "localhost",
   port: Number(process.env.POSTGRES_PORT || 5432),
@@ -290,13 +278,6 @@ function runFinderDirectoryPicker() {
   });
 }
 
-function roleToSlug(role) {
-  return String(role || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
 async function fileExists(filePath) {
   try {
     await access(filePath, fsConstants.R_OK);
@@ -307,33 +288,35 @@ async function fileExists(filePath) {
 }
 
 async function resolveTemplatePath(role) {
-  const envKey = roleTemplateEnvMap[role];
-  const envPath = envKey ? process.env[envKey] : "";
-  const templateRootSetting = await getUserUrlSetting("template_root");
-  const templateRoot = templateRootSetting || process.env.TEMPLATE_ROOT || process.cwd();
-  const slug = roleToSlug(role);
-
-  const candidates = [];
-
-  if (envPath) {
-    candidates.push(path.isAbsolute(envPath) ? envPath : path.resolve(process.cwd(), envPath));
+  const roleName = String(role || "").trim();
+  if (!roleName) {
+    throw new Error("Role is required.");
   }
 
-  candidates.push(path.resolve(templateRoot, "templates", `${slug}.docx`));
-  candidates.push(path.resolve(templateRoot, "templates", `${slug}_cover_letter.docx`));
-  candidates.push(path.resolve(templateRoot, "templates", `${slug}_template.docx`));
-  candidates.push(path.resolve(templateRoot, `${slug}.docx`));
-  candidates.push(path.resolve(templateRoot, "Uranbileg_CLetter.docx"));
-
-  for (const candidate of candidates) {
-    if (await fileExists(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw new Error(
-    `No template found for role "${role}". Set ${envKey || "the role-specific template env"} or add a template file under templates/.`
+  const result = await dbPool.query(
+    `
+    SELECT cover_letter_template
+    FROM job_roles
+    WHERE user_id = $1 AND lower(name) = lower($2)
+    LIMIT 1
+  `,
+    [DEFAULT_USER_ID, roleName]
   );
+
+  if (result.rowCount === 0) {
+    throw new Error(`No job role found with name "${roleName}".`);
+  }
+
+  const storedPath = String(result.rows[0].cover_letter_template || "").trim();
+  if (!storedPath) {
+    throw new Error(`Role "${roleName}" does not have cover_letter_template path set.`);
+  }
+
+  const resolved = path.resolve(storedPath);
+  if (!(await fileExists(resolved))) {
+    throw new Error(`Template file does not exist: ${resolved}`);
+  }
+  return resolved;
 }
 
 function splitParagraphs(rawText) {
@@ -344,20 +327,31 @@ function splitParagraphs(rawText) {
 }
 
 function findTemplateParagraphs(paragraphs) {
-  const startMarker = "dear hiring team";
-  const endMarker = "thank you for your time and consideration";
+  const normalized = paragraphs
+    .map((p) => String(p || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 
-  const startIdx = paragraphs.findIndex((p) => p.toLowerCase().startsWith(startMarker));
-  const endIdx = paragraphs.findIndex((p) => p.toLowerCase().includes(endMarker));
+  const startIdx = normalized.findIndex((p) => /^dear\b/i.test(p));
+  const endIdx = normalized.findIndex(
+    (p) =>
+      /thank you for your time and consideration/i.test(p) ||
+      /^sincerely\b/i.test(p) ||
+      /^best regards\b/i.test(p)
+  );
 
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
-    throw new Error(
-      'Could not find "Dear Hiring Team" to "Thank you for your time and consideration." in template.'
-    );
+  if (startIdx !== -1 && endIdx !== -1 && endIdx >= startIdx) {
+    // Exclude salutation itself, keep closing sentence if present.
+    return normalized.slice(startIdx + 1, endIdx + 1).slice(0, 5);
   }
 
-  // Exclude the salutation itself from paragraph fields.
-  return paragraphs.slice(startIdx + 1, endIdx + 1);
+  // Fallback for templates with different wording/structure.
+  const likelyBody = normalized.filter((p) => {
+    if (/^(dear|sincerely|best regards|regards|thank you)/i.test(p)) return false;
+    if (p.length < 40) return false;
+    return true;
+  });
+
+  return likelyBody.slice(0, 5);
 }
 
 function parseApplicationId(rawId) {
@@ -366,6 +360,14 @@ function parseApplicationId(rawId) {
     return null;
   }
   return id;
+}
+
+function parseApplicationStatus(rawStatus) {
+  const status = String(rawStatus || "").trim().toLowerCase();
+  if (status === "in_process" || status === "applied") {
+    return status;
+  }
+  return null;
 }
 
 function normalizeDirectory(inputPath) {
@@ -537,7 +539,8 @@ Return ONLY strict JSON with this shape:
 
 Rules:
 1) If missing, return empty string or [].
-2) Responsibilities/qualifications must be concise bullet-ready phrases.
+2) Responsibilities/qualifications must include ALL distinct points found in the text.
+2.1) Do not summarize aggressively or keep only top points.
 3) companyInformation should be 2-5 sentences suitable for cover letter context.
 4) Prefer City, ST for location when possible.
 5) Do not include markdown fences.
@@ -551,14 +554,29 @@ function cleanupWebDescription(rawText) {
   const normalized = text.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 
   // Prefer the most relevant part of long pasted pages.
-  const markers = ["Job description", "Description", "What You’ll Do", "What You'll Do", "Qualifications"];
-  let startIndex = 0;
+  // Important: choose the EARLIEST found marker, otherwise sections like
+  // "Key Responsibilities" can be skipped if "Qualifications" appears first in marker order.
+  const markers = [
+    "Job description",
+    "Description",
+    "Key Responsibilities",
+    "Responsibilities",
+    "What You’ll Do",
+    "What You'll Do",
+    "Duties",
+    "Qualifications",
+    "Requirements",
+    "What You Bring"
+  ];
+  let startIndex = -1;
   for (const marker of markers) {
     const idx = normalized.toLowerCase().indexOf(marker.toLowerCase());
-    if (idx !== -1) {
+    if (idx !== -1 && (startIndex === -1 || idx < startIndex)) {
       startIndex = idx;
-      break;
     }
+  }
+  if (startIndex === -1) {
+    startIndex = 0;
   }
 
   const sliced = normalized.slice(startIndex).trim();
@@ -589,18 +607,108 @@ function normalizeCityState(location) {
   return `${city}, ${abbr}`;
 }
 
-function extractBulletSection(text, headerRegex, stopRegexes) {
+function normalizeSectionHeader(line) {
+  return String(line || "")
+    .toLowerCase()
+    .replace(/[:\-\u2013\u2014]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function headerMatches(line, keywords) {
+  const value = normalizeSectionHeader(line);
+  if (!value) return false;
+  return keywords.some((k) => value.includes(k));
+}
+
+function chunkTextForRetrieval(text, chunkSize = 1400, overlap = 220) {
+  const clean = String(text || "").trim();
+  if (!clean) return [];
+  const chunks = [];
+  let start = 0;
+  while (start < clean.length) {
+    const end = Math.min(clean.length, start + chunkSize);
+    const piece = clean.slice(start, end).trim();
+    if (piece) chunks.push(piece);
+    if (end >= clean.length) break;
+    start = Math.max(0, end - overlap);
+  }
+  return chunks.slice(0, 80);
+}
+
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return -1;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (!normA || !normB) return -1;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+async function embedTexts(texts) {
+  const batchSize = 32;
+  const out = [];
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    const response = await openai.embeddings.create({
+      model: process.env.OPENAI_EMBED_MODEL || "text-embedding-3-small",
+      input: batch
+    });
+    for (const row of response.data || []) {
+      out.push(row.embedding);
+    }
+  }
+  return out;
+}
+
+async function retrieveRelevantContextFromText(text) {
+  const chunks = chunkTextForRetrieval(text);
+  if (!chunks.length) return "";
+
+  const queries = [
+    "Find exact job title, company name, and location.",
+    "Find all responsibilities, duties, and what you will do.",
+    "Find all qualifications, requirements, and skills.",
+    "Find company information and overview."
+  ];
+
+  const [chunkEmbeddings, queryEmbeddings] = await Promise.all([
+    embedTexts(chunks),
+    embedTexts(queries)
+  ]);
+
+  const selected = new Set();
+  for (const qEmbed of queryEmbeddings) {
+    const scored = chunkEmbeddings
+      .map((cEmbed, idx) => ({ idx, score: cosineSimilarity(qEmbed, cEmbed) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+    for (const item of scored) {
+      selected.add(item.idx);
+    }
+  }
+
+  const ordered = Array.from(selected).sort((a, b) => a - b);
+  return ordered.map((idx) => chunks[idx]).join("\n\n");
+}
+
+function extractBulletSection(text, startKeywords, stopKeywords) {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const out = [];
   let inSection = false;
 
   for (const line of lines) {
-    if (!inSection && headerRegex.test(line)) {
+    if (!inSection && headerMatches(line, startKeywords)) {
       inSection = true;
       continue;
     }
     if (!inSection) continue;
-    if (stopRegexes.some((r) => r.test(line))) break;
+    if (headerMatches(line, stopKeywords)) break;
 
     const cleaned = line.replace(/^[•\-*]\s*/, "").trim();
     if (!cleaned) continue;
@@ -608,11 +716,44 @@ function extractBulletSection(text, headerRegex, stopRegexes) {
     if (cleaned.endsWith(":")) continue;
     out.push(cleaned);
   }
-  return Array.from(new Set(out)).slice(0, 12);
+  return Array.from(new Set(out));
 }
 
 function heuristicTextExtraction(text) {
   const clean = String(text || "");
+  const responsibilityHeaders = [
+    "key responsibilities",
+    "responsibilities",
+    "what you'll do",
+    "what you will do",
+    "duties",
+    "role responsibilities",
+    "your responsibilities",
+    "day-to-day"
+  ];
+  const qualificationHeaders = [
+    "qualifications",
+    "minimum qualifications",
+    "preferred qualifications",
+    "requirements",
+    "what you bring",
+    "skills",
+    "required skills",
+    "experience"
+  ];
+  const sectionStops = [
+    "qualifications",
+    "requirements",
+    "what you bring",
+    "what success looks like",
+    "benefits",
+    "we offer",
+    "about the employer",
+    "company overview",
+    "equal opportunity employer",
+    "apply"
+  ];
+
   const titleMatch =
     clean.match(/^\s*([^\n]{4,120})\n[^\n]*\nOverview/im) ||
     clean.match(/Job description\s*\n\s*([^\n]{4,120})/i);
@@ -624,14 +765,22 @@ function heuristicTextExtraction(text) {
 
   const responsibilities = extractBulletSection(
     clean,
-    /^(What You['’]ll Do|Responsibilities|Operational Metrics Support|Cost & Data Analysis|Project & Process Exposure|Reporting & Presentation)$/i,
-    [/^(Qualifications|What You Bring|What Success Looks Like|Benefits|About the employer)$/i]
+    responsibilityHeaders,
+    sectionStops
   );
 
   const qualifications = extractBulletSection(
     clean,
-    /^(Qualifications|What You Bring)$/i,
-    [/^(What Success Looks Like|Why |Benefits|About the employer)$/i]
+    qualificationHeaders,
+    [
+      "what success looks like",
+      "benefits",
+      "we offer",
+      "about the employer",
+      "company overview",
+      "equal opportunity employer",
+      "apply"
+    ]
   );
 
   const overviewMatch =
@@ -652,7 +801,17 @@ function heuristicTextExtraction(text) {
 async function extractJobFieldsFromText(webDescription) {
   const preparedText = cleanupWebDescription(webDescription);
   const fallback = heuristicTextExtraction(preparedText);
+  let retrievalContext = preparedText;
   let parsed = {};
+
+  try {
+    const retrieved = await retrieveRelevantContextFromText(preparedText);
+    if (retrieved.trim()) {
+      retrievalContext = retrieved;
+    }
+  } catch {
+    retrievalContext = preparedText;
+  }
 
   try {
     const completion = await openai.chat.completions.create({
@@ -664,7 +823,7 @@ async function extractJobFieldsFromText(webDescription) {
           content:
             "You extract structured job data from raw job-posting text and return strict JSON."
         },
-        { role: "user", content: buildTextExtractionPrompt(preparedText) }
+        { role: "user", content: buildTextExtractionPrompt(retrievalContext) }
       ]
     });
 
@@ -712,6 +871,7 @@ function buildImproveParagraphsPrompt(payload) {
     companyInformation,
     responsibilities,
     qualifications,
+    cvText,
     improvementPrompt,
     improvedParagraph1,
     improvedParagraph2,
@@ -737,6 +897,9 @@ ${responsibilities}
 Qualifications:
 ${qualifications}
 
+Master CV:
+${cvText || "Not provided"}
+
 Template paragraphs:
 1) ${paragraph1}
 2) ${paragraph2}
@@ -758,7 +921,9 @@ Instructions:
 1) Return ONLY valid JSON with keys: improvedParagraph1, improvedParagraph2, improvedParagraph3, improvedParagraph4, improvedParagraph5.
 2) Keep each improved paragraph aligned to its template paragraph number.
 3) Tailor wording to responsibilities and qualifications.
-3.1) Apply any custom user notes/prompts provided above.
+3.1) Use the provided CV text to inject only relevant, truthful qualifications and experience for this role.
+3.2) Prioritize qualifications that match the job's required skills and qualifications.
+3.3) Apply any custom user notes/prompts provided above.
 4) In improvedParagraph4, include company-specific information and replace any [company] placeholder with "${companyName}".
 5) Keep each paragraph concise and natural (2-4 sentences each).`;
 }
@@ -878,7 +1043,7 @@ app.get("/api/applications", async (_req, res) => {
       });
     }
     const result = await dbPool.query(`
-      SELECT id, role, company_name, job_title, date, location, updated_at
+      SELECT id, role, company_name, job_title, date, location, status, applied_date, updated_at
       FROM job_application
       ORDER BY updated_at DESC, id DESC
     `);
@@ -890,6 +1055,8 @@ app.get("/api/applications", async (_req, res) => {
         jobTitle: row.job_title || "",
         date: row.date || "",
         location: row.location || "",
+        status: row.status || "in_process",
+        appliedDate: row.applied_date || "",
         updatedAt: row.updated_at
       }))
     });
@@ -920,6 +1087,7 @@ app.get("/api/applications/:id", async (req, res) => {
       id,
       record: {
         ...JobApplication.fromDbRow(result.rows[0]),
+        appliedDate: String(result.rows[0].applied_date || ""),
         updatedAt: result.rows[0].updated_at
       }
     });
@@ -999,6 +1167,50 @@ app.put("/api/applications/:id", async (req, res) => {
   }
 });
 
+app.patch("/api/applications/:id/status", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const id = parseApplicationId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid application id." });
+    }
+    const status = parseApplicationStatus(req.body?.status);
+    if (!status) {
+      return res.status(400).json({ error: "Invalid status. Use in_process or applied." });
+    }
+
+    const result = await dbPool.query(
+      `
+      UPDATE job_application
+      SET
+        status = $1,
+        applied_date = CASE WHEN $1 = 'applied' THEN TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') ELSE '' END,
+        updated_at = NOW()
+      WHERE id = $2
+      RETURNING applied_date, updated_at
+    `,
+      [status, id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Application not found." });
+    }
+    return res.json({
+      saved: true,
+      id,
+      status,
+      appliedDate: String(result.rows[0].applied_date || ""),
+      updatedAt: result.rows[0].updated_at
+    });
+  } catch (error) {
+    console.error("Update application status failed:", error);
+    return res.status(500).json({ error: "Failed to update application status." });
+  }
+});
+
 app.delete("/api/applications/:id", async (req, res) => {
   try {
     if (!dbReady) {
@@ -1030,7 +1242,7 @@ app.get("/api/job-roles", async (_req, res) => {
     }
     const result = await dbPool.query(
       `
-      SELECT id, user_id, name, cover_letter_template, updated_at
+      SELECT id, user_id, name, cover_letter_template, cv_template, cv_text, updated_at
       FROM job_roles
       WHERE user_id = $1
       ORDER BY lower(name) ASC, id ASC
@@ -1043,6 +1255,8 @@ app.get("/api/job-roles", async (_req, res) => {
         userId: row.user_id,
         name: row.name || "",
         coverLetterTemplate: row.cover_letter_template || "",
+        cvTemplate: row.cv_template || "",
+        cvText: row.cv_text || "",
         updatedAt: row.updated_at
       }))
     });
@@ -1065,7 +1279,7 @@ app.get("/api/job-roles/:id", async (req, res) => {
     }
     const result = await dbPool.query(
       `
-      SELECT id, user_id, name, cover_letter_template, updated_at
+      SELECT id, user_id, name, cover_letter_template, cv_template, cv_text, updated_at
       FROM job_roles
       WHERE id = $1 AND user_id = $2
       LIMIT 1
@@ -1082,6 +1296,8 @@ app.get("/api/job-roles/:id", async (req, res) => {
         userId: row.user_id,
         name: row.name || "",
         coverLetterTemplate: row.cover_letter_template || "",
+        cvTemplate: row.cv_template || "",
+        cvText: row.cv_text || "",
         updatedAt: row.updated_at
       }
     });
@@ -1100,16 +1316,18 @@ app.post("/api/job-roles", async (req, res) => {
     }
     const name = String(req.body?.name || "").trim();
     const coverLetterTemplate = String(req.body?.coverLetterTemplate || "").trim();
+    const cvTemplate = String(req.body?.cvTemplate || "").trim();
+    const cvText = String(req.body?.cvText || "");
     if (!name) {
       return res.status(400).json({ error: "name is required." });
     }
     const result = await dbPool.query(
       `
-      INSERT INTO job_roles (user_id, name, cover_letter_template, updated_at)
-      VALUES ($1, $2, $3, NOW())
+      INSERT INTO job_roles (user_id, name, cover_letter_template, cv_template, cv_text, updated_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
       RETURNING id, updated_at
     `,
-      [DEFAULT_USER_ID, name, coverLetterTemplate]
+      [DEFAULT_USER_ID, name, coverLetterTemplate, cvTemplate, cvText]
     );
     return res.status(201).json({
       created: true,
@@ -1139,6 +1357,8 @@ app.put("/api/job-roles/:id", async (req, res) => {
     }
     const name = String(req.body?.name || "").trim();
     const coverLetterTemplate = String(req.body?.coverLetterTemplate || "").trim();
+    const cvTemplate = String(req.body?.cvTemplate || "").trim();
+    const cvText = String(req.body?.cvText || "");
     if (!name) {
       return res.status(400).json({ error: "name is required." });
     }
@@ -1147,11 +1367,13 @@ app.put("/api/job-roles/:id", async (req, res) => {
       UPDATE job_roles
       SET name = $1,
           cover_letter_template = $2,
+          cv_template = $3,
+          cv_text = $4,
           updated_at = NOW()
-      WHERE id = $3 AND user_id = $4
+      WHERE id = $5 AND user_id = $6
       RETURNING updated_at
     `,
-      [name, coverLetterTemplate, id, DEFAULT_USER_ID]
+      [name, coverLetterTemplate, cvTemplate, cvText, id, DEFAULT_USER_ID]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Job role not found." });
@@ -1496,6 +1718,13 @@ app.post("/api/template-paragraphs", async (req, res) => {
       paragraph5: selected[4] || ""
     };
 
+    const hasAnyParagraph = Object.values(payload).some((v) => String(v || "").trim());
+    if (!hasAnyParagraph) {
+      throw new Error(
+        `No usable paragraph content found in template file: ${templatePath}. Check that the role template path points to a valid cover letter template.`
+      );
+    }
+
     return res.json({
       templatePath,
       paragraphs: payload
@@ -1534,7 +1763,29 @@ app.post("/api/improve-paragraphs", async (req, res) => {
       });
     }
 
-    const improved = await generateImprovedParagraphs(req.body);
+    let roleCvText = "";
+    const roleName = String(req.body?.role || "").trim();
+    if (dbReady && roleName) {
+      try {
+        const cvResult = await dbPool.query(
+          `
+          SELECT cv_text
+          FROM job_roles
+          WHERE user_id = $1 AND lower(name) = lower($2)
+          LIMIT 1
+        `,
+          [DEFAULT_USER_ID, roleName]
+        );
+        roleCvText = String(cvResult.rows?.[0]?.cv_text || "");
+      } catch {
+        roleCvText = "";
+      }
+    }
+
+    const improved = await generateImprovedParagraphs({
+      ...req.body,
+      cvText: roleCvText
+    });
     return res.json({ improved });
   } catch (error) {
     console.error("Paragraph improvement failed:", error);

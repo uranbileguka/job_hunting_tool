@@ -15,18 +15,6 @@ function getTodayLocalDate() {
   return new Date(now.getTime() - tzOffsetMs).toISOString().slice(0, 10);
 }
 
-const roleOptions = [
-  "Software engineering intern",
-  "Software engineer",
-  "Data engineer",
-  "Data engineering intern",
-  "Ai engineer",
-  "Ai engineer intern",
-  "ERP consultant",
-  "ERP consulatnt inteneer",
-  "solution engineer"
-];
-
 function createInitialForm() {
   return {
     role: "",
@@ -35,6 +23,7 @@ function createInitialForm() {
     officialJobLink: "",
     companyWebsiteLink: "",
     date: getTodayLocalDate(),
+    appliedDate: "",
     companyName: "",
     jobTitle: "",
     location: "",
@@ -52,7 +41,8 @@ function createInitialForm() {
     paragraph4: "",
     paragraph5: "",
     responsibilities: "",
-    qualifications: ""
+    qualifications: "",
+    status: "in_process"
   };
 }
 
@@ -76,14 +66,18 @@ export default function App() {
   const [selectedJobRoleId, setSelectedJobRoleId] = useState(null);
   const [showJobRoleForm, setShowJobRoleForm] = useState(false);
   const [uploadingRoleTemplate, setUploadingRoleTemplate] = useState(false);
+  const [uploadingCvTemplate, setUploadingCvTemplate] = useState(false);
   const roleTemplateInputRef = useRef(null);
+  const cvTemplateInputRef = useRef(null);
   const [roleTemplateText, setRoleTemplateText] = useState("");
   const [loadingRoleTemplateText, setLoadingRoleTemplateText] = useState(false);
   const [savingRoleTemplateText, setSavingRoleTemplateText] = useState(false);
   const [jobRoleForm, setJobRoleForm] = useState({
     userId: 1,
     name: "",
-    coverLetterTemplate: ""
+    coverLetterTemplate: "",
+    cvTemplate: "",
+    cvText: ""
   });
   const [loadingMasterCv, setLoadingMasterCv] = useState(false);
   const [savingMasterCv, setSavingMasterCv] = useState(false);
@@ -92,6 +86,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [loadingTemplate, setLoadingTemplate] = useState(false);
+  const [autoFilling, setAutoFilling] = useState(false);
   const [improving, setImproving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportInfo, setExportInfo] = useState("");
@@ -100,6 +95,8 @@ export default function App() {
   const [loadingRecord, setLoadingRecord] = useState(false);
   const [loadingApplications, setLoadingApplications] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState("all");
+  const [applicationCompanySearch, setApplicationCompanySearch] = useState("");
   const [error, setError] = useState("");
 
   const isDisabled = useMemo(
@@ -125,19 +122,45 @@ export default function App() {
     [form]
   );
 
+  const filteredApplications = useMemo(() => {
+    const normalizedSearch = String(applicationCompanySearch || "").trim().toLowerCase();
+    return applications.filter((app) => {
+      const status = String(app.status || "in_process");
+      const company = String(app.companyName || "").toLowerCase();
+      const matchesStatus =
+        applicationStatusFilter === "all" ? true : status === applicationStatusFilter;
+      const matchesCompany = normalizedSearch ? company.includes(normalizedSearch) : true;
+      return matchesStatus && matchesCompany;
+    });
+  }, [applications, applicationStatusFilter, applicationCompanySearch]);
+
   const groupedApplications = useMemo(() => {
     const groups = new Map();
-    for (const app of applications) {
-      const key = app.companyName || "Unknown Company";
+    for (const app of filteredApplications) {
+      const key = app.role || "Unknown Role";
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(app);
     }
     return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filteredApplications]);
+
+  const applicationStatusStats = useMemo(() => {
+    const total = applications.length;
+    const applied = applications.filter((a) => String(a.status || "") === "applied").length;
+    const inProcess = total - applied;
+    const appliedPercent = total > 0 ? Math.round((applied / total) * 100) : 0;
+    const inProcessPercent = total > 0 ? 100 - appliedPercent : 0;
+    return { total, applied, inProcess, appliedPercent, inProcessPercent };
   }, [applications]);
 
   const sortedJobRoles = useMemo(
     () => [...jobRoles].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""))),
     [jobRoles]
+  );
+
+  const roleOptions = useMemo(
+    () => sortedJobRoles.map((r) => String(r.name || "").trim()).filter(Boolean),
+    [sortedJobRoles]
   );
 
   const updateField = (event) => {
@@ -313,7 +336,9 @@ export default function App() {
     setJobRoleForm({
       userId: 1,
       name: "",
-      coverLetterTemplate: ""
+      coverLetterTemplate: "",
+      cvTemplate: "",
+      cvText: ""
     });
     setRoleTemplateText("");
   };
@@ -333,7 +358,9 @@ export default function App() {
       setJobRoleForm({
         userId: Number(role.userId || 1),
         name: String(role.name || ""),
-        coverLetterTemplate: String(role.coverLetterTemplate || "")
+        coverLetterTemplate: String(role.coverLetterTemplate || ""),
+        cvTemplate: String(role.cvTemplate || ""),
+        cvText: String(role.cvText || "")
       });
       setRoleTemplateText("");
       setShowJobRoleForm(true);
@@ -349,7 +376,9 @@ export default function App() {
     try {
       const payload = {
         name: String(jobRoleForm.name || "").trim(),
-        coverLetterTemplate: String(jobRoleForm.coverLetterTemplate || "").trim()
+        coverLetterTemplate: String(jobRoleForm.coverLetterTemplate || "").trim(),
+        cvTemplate: String(jobRoleForm.cvTemplate || "").trim(),
+        cvText: String(jobRoleForm.cvText || "")
       };
       if (!payload.name) {
         throw new Error("Job role name is required.");
@@ -458,6 +487,88 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setUploadingRoleTemplate(false);
+      event.target.value = "";
+    }
+  };
+
+  const onBrowseCvTemplate = async () => {
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/system/pick-docx`);
+      const data = await response.json();
+      if (response.ok && data?.filePath) {
+        setJobRoleForm((prev) => ({ ...prev, cvTemplate: String(data.filePath) }));
+        setFillInfo(`CV template selected: ${data.filePath}`);
+        return;
+      }
+    } catch {
+      // Fallback below.
+    }
+
+    if (cvTemplateInputRef.current) {
+      cvTemplateInputRef.current.value = "";
+      cvTemplateInputRef.current.click();
+    }
+  };
+
+  const onCvTemplatePicked = async (event) => {
+    const picked = Array.from(event.target.files || []);
+    if (!picked.length) return;
+    const file = picked[0];
+    const localPath =
+      typeof file.path === "string" && file.path.trim().toLowerCase().endsWith(".docx")
+        ? file.path.trim()
+        : "";
+
+    if (localPath) {
+      setJobRoleForm((prev) => ({ ...prev, cvTemplate: localPath }));
+      setFillInfo(`CV template selected: ${localPath}`);
+      event.target.value = "";
+      return;
+    }
+
+    setUploadingCvTemplate(true);
+    setError("");
+    try {
+      const contentBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const bytes = new Uint8Array(reader.result);
+            let binary = "";
+            const chunkSize = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+              const chunk = bytes.subarray(i, i + chunkSize);
+              binary += String.fromCharCode(...chunk);
+            }
+            resolve(btoa(binary));
+          } catch {
+            reject(new Error(`Failed to encode ${file.name}`));
+          }
+        };
+        reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+        reader.readAsArrayBuffer(file);
+      });
+
+      const response = await fetch(`${API_BASE_URL}/api/templates/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: [{ name: file.name, contentBase64 }]
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to upload selected CV template file.");
+      const uploadedPath = String(data?.filePath || data?.files?.[0]?.path || "").trim();
+      if (!uploadedPath) {
+        throw new Error("CV template uploaded but no file path was returned.");
+      }
+      setJobRoleForm((prev) => ({ ...prev, cvTemplate: uploadedPath }));
+      setFillInfo(`CV template selected and uploaded: ${file.name}`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUploadingCvTemplate(false);
       event.target.value = "";
     }
   };
@@ -581,7 +692,12 @@ export default function App() {
       const response = await fetch(`${API_BASE_URL}/api/applications/${id}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to load application.");
-      setForm((prev) => ({ ...prev, ...(data.record || {}) }));
+      setForm((prev) => ({
+        ...prev,
+        ...(data.record || {}),
+        status: String(data.record?.status || "in_process"),
+        appliedDate: String(data.record?.appliedDate || "")
+      }));
       setCurrentApplicationId(id);
       setActiveMenu("new");
       setFillInfo(`Loaded application #${id}.`);
@@ -620,6 +736,29 @@ export default function App() {
     }
   };
 
+  const persistApplicationAfterAction = async (nextForm, successMessage = "") => {
+    try {
+      const method = currentApplicationId ? "PUT" : "POST";
+      const url = currentApplicationId
+        ? `${API_BASE_URL}/api/applications/${currentApplicationId}`
+        : `${API_BASE_URL}/api/applications`;
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextForm)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to auto-save application.");
+
+      const id = currentApplicationId || data.id;
+      if (id) setCurrentApplicationId(id);
+      await loadApplications();
+      if (successMessage) setFillInfo(successMessage);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
   const deleteApplication = async (id) => {
     setDeletingId(id);
     setError("");
@@ -641,6 +780,42 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const markApplicationApplied = async (id) => {
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/applications/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "applied" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to mark application as applied.");
+
+      setApplications((prev) =>
+        prev.map((app) =>
+          app.id === id
+            ? {
+                ...app,
+                status: "applied",
+                appliedDate: String(data.appliedDate || getTodayLocalDate())
+              }
+            : app
+        )
+      );
+      if (currentApplicationId === id) {
+        setForm((prev) => ({
+          ...prev,
+          status: "applied",
+          appliedDate: String(data.appliedDate || getTodayLocalDate())
+        }));
+      }
+      setFillInfo(`Application #${id} marked as applied.`);
+      await loadApplications();
+    } catch (requestError) {
+      setError(requestError.message);
     }
   };
 
@@ -669,8 +844,8 @@ export default function App() {
         companyName: extracted.companyName || prev.companyName,
         jobTitle: extracted.jobTitle || prev.jobTitle,
         location: extracted.location || prev.location,
-        responsibilities: extracted.responsibilities || prev.responsibilities,
-        qualifications: extracted.qualifications || prev.qualifications,
+        responsibilities: String(extracted.responsibilities || ""),
+        qualifications: String(extracted.qualifications || ""),
         companyInformation: extracted.companyInformation || prev.companyInformation,
         companyWebsiteLink: extracted.companyWebsiteLink || prev.companyWebsiteLink
       }));
@@ -703,8 +878,8 @@ export default function App() {
         companyName: extracted.companyName || prev.companyName,
         jobTitle: extracted.jobTitle || prev.jobTitle,
         location: extracted.location || prev.location,
-        responsibilities: extracted.responsibilities || prev.responsibilities,
-        qualifications: extracted.qualifications || prev.qualifications,
+        responsibilities: String(extracted.responsibilities || ""),
+        qualifications: String(extracted.qualifications || ""),
         companyInformation: extracted.companyInformation || prev.companyInformation,
         companyWebsiteLink: extracted.companyWebsiteLink || prev.companyWebsiteLink
       }));
@@ -744,6 +919,87 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setLoadingTemplate(false);
+    }
+  };
+
+  // Combined helper: fill job fields from either link or pasted web description, then load role template paragraphs.
+  const fillFieldsAndLoadParagraphs = async () => {
+    setAutoFilling(true);
+    setError("");
+    setFillInfo("");
+
+    try {
+      let extracted = {};
+
+      if (String(form.webDescription || "").trim()) {
+        const response = await fetch(`${API_BASE_URL}/api/extract-job-fields-from-text`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            webDescription: form.webDescription
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to extract fields from web description.");
+        }
+        extracted = data.fields || {};
+      } else if (hasAnyJobLink) {
+        const response = await fetch(`${API_BASE_URL}/api/extract-job-fields`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            officialJobLink: form.officialJobLink,
+            jobrightLink: form.jobrightLink,
+            linkedinLink: form.linkedinLink
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to extract fields from link.");
+        }
+        extracted = data.fields || {};
+      } else {
+        throw new Error("Provide at least one job link or web description.");
+      }
+
+      const nextRole = form.role;
+      if (!nextRole) {
+        throw new Error("Role is required to load template paragraphs.");
+      }
+
+      const templateResponse = await fetch(`${API_BASE_URL}/api/template-paragraphs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: nextRole })
+      });
+      const templateData = await templateResponse.json();
+      if (!templateResponse.ok) {
+        throw new Error(templateData.error || "Failed to load template paragraphs.");
+      }
+      const paragraphs = templateData.paragraphs || {};
+
+      const nextForm = {
+        ...form,
+        companyName: extracted.companyName || form.companyName,
+        jobTitle: extracted.jobTitle || form.jobTitle,
+        location: extracted.location || form.location,
+        responsibilities: String(extracted.responsibilities || ""),
+        qualifications: String(extracted.qualifications || ""),
+        companyInformation: extracted.companyInformation || form.companyInformation,
+        companyWebsiteLink: extracted.companyWebsiteLink || form.companyWebsiteLink,
+        paragraph1: paragraphs.paragraph1 || form.paragraph1,
+        paragraph2: paragraphs.paragraph2 || form.paragraph2,
+        paragraph3: paragraphs.paragraph3 || form.paragraph3,
+        paragraph4: paragraphs.paragraph4 || form.paragraph4,
+        paragraph5: paragraphs.paragraph5 || form.paragraph5
+      };
+      setForm(nextForm);
+      await persistApplicationAfterAction(nextForm, "Done: fields filled and paragraphs loaded.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAutoFilling(false);
     }
   };
 
@@ -803,7 +1059,7 @@ export default function App() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Failed to generate cover letter.");
       setLetter(data.letter || "");
-      setFillInfo("Done: cover letter generated.");
+      await persistApplicationAfterAction(payload, "Done: cover letter generated.");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -826,15 +1082,16 @@ export default function App() {
       if (!response.ok) throw new Error(data.error || "Failed to improve template paragraphs.");
 
       const improved = data.improved || {};
-      setForm((prev) => ({
-        ...prev,
-        improvedParagraph1: improved.improvedParagraph1 || prev.improvedParagraph1,
-        improvedParagraph2: improved.improvedParagraph2 || prev.improvedParagraph2,
-        improvedParagraph3: improved.improvedParagraph3 || prev.improvedParagraph3,
-        improvedParagraph4: improved.improvedParagraph4 || prev.improvedParagraph4,
-        improvedParagraph5: improved.improvedParagraph5 || prev.improvedParagraph5
-      }));
-      setFillInfo("Done: improved paragraphs generated.");
+      const nextForm = {
+        ...form,
+        improvedParagraph1: improved.improvedParagraph1 || form.improvedParagraph1,
+        improvedParagraph2: improved.improvedParagraph2 || form.improvedParagraph2,
+        improvedParagraph3: improved.improvedParagraph3 || form.improvedParagraph3,
+        improvedParagraph4: improved.improvedParagraph4 || form.improvedParagraph4,
+        improvedParagraph5: improved.improvedParagraph5 || form.improvedParagraph5
+      };
+      setForm(nextForm);
+      await persistApplicationAfterAction(nextForm, "Done: improved paragraphs generated.");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -861,7 +1118,7 @@ export default function App() {
         ? `PDF: ${data.pdfPath}`
         : `PDF not created${data.pdfError ? ` (${data.pdfError})` : ""}`;
       setExportInfo(`DOCX: ${data.docxPath} | ${pdfPart}`);
-      setFillInfo("Done: export completed.");
+      await persistApplicationAfterAction(form, "Done: export completed.");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -893,6 +1150,9 @@ export default function App() {
             <Card className="min-h-0">
               <CardContent className="h-full overflow-auto pt-4">
                 <form onSubmit={generateCoverLetter} className="space-y-3">
+                  <div className="text-sm font-medium text-muted-foreground">
+                    Form ID: {currentApplicationId ? `#${currentApplicationId}` : "New"}
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" variant="secondary" onClick={startNewForm}>New</Button>
                     <Button
@@ -908,6 +1168,12 @@ export default function App() {
                         {deletingId === currentApplicationId ? "Deleting..." : "Delete Current"}
                       </Button>
                     ) : null}
+                    <Button
+                      type="submit"
+                      disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}
+                    >
+                      {loading ? "Generating..." : "Generate Cover Letter"}
+                    </Button>
                   </div>
 
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
@@ -925,6 +1191,7 @@ export default function App() {
                     <div className="space-y-1"><Label>Official Job Link</Label><Input name="officialJobLink" type="url" value={form.officialJobLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Company Website Link</Label><Input name="companyWebsiteLink" type="url" value={form.companyWebsiteLink} onChange={updateField} /></div>
                     <div className="space-y-1"><Label>Date*</Label><Input name="date" type="date" value={form.date} onChange={updateField} required /></div>
+                    <div className="space-y-1"><Label>Applied Date</Label><Input name="appliedDate" type="date" value={form.appliedDate || ""} readOnly disabled /></div>
                     <div className="space-y-1"><Label>Company Name*</Label><Input name="companyName" value={form.companyName} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Job Title*</Label><Input name="jobTitle" value={form.jobTitle} onChange={updateField} required /></div>
                     <div className="space-y-1"><Label>Location*</Label><Input name="location" value={form.location} onChange={updateField} required /></div>
@@ -935,9 +1202,23 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" variant="secondary" onClick={extractFieldsFromLink} disabled={!hasAnyJobLink || extracting || loading || savingRecord || loadingRecord}>{extracting ? "Filling..." : "Fill Fields From Link"}</Button>
-                    <Button type="button" variant="secondary" onClick={loadParagraphsFromTemplate} disabled={!form.role || loadingTemplate || loading || improving || savingRecord || loadingRecord}>{loadingTemplate ? "Loading..." : "Load Paragraph 1-5 From Role Template"}</Button>
-                    <Button type="button" variant="secondary" onClick={extractFieldsFromWebDescription} disabled={!form.webDescription || extracting || loading || improving || loadingTemplate || savingRecord || loadingRecord}>{extracting ? "Filling..." : "Fill From Web Description"}</Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={fillFieldsAndLoadParagraphs}
+                      disabled={
+                        autoFilling ||
+                        loading ||
+                        improving ||
+                        exporting ||
+                        savingRecord ||
+                        loadingRecord ||
+                        (!hasAnyJobLink && !String(form.webDescription || "").trim()) ||
+                        !form.role
+                      }
+                    >
+                      {autoFilling ? "Processing..." : "1) Fill Fields (Link/Web) + Load Paragraphs"}
+                    </Button>
                     <Button type="button" variant="secondary" onClick={generateImprovedParagraphs} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{improving ? "Improving..." : "Generate Improved Paragraphs"}</Button>
                     <Button type="button" variant="secondary" onClick={exportCoverLetterFiles} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{exporting ? "Exporting..." : "Export DOCX + PDF"}</Button>
                   </div>
@@ -961,7 +1242,6 @@ export default function App() {
                     <div className="space-y-1 xl:col-span-2"><Label>Template Paragraph 5*</Label><Textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows={2} required /></div>
                   </div>
 
-                  <Button type="submit" disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{loading ? "Generating..." : "Generate Cover Letter"}</Button>
                 </form>
               </CardContent>
             </Card>
@@ -974,20 +1254,114 @@ export default function App() {
                 <Button type="button" variant="secondary" onClick={loadApplications} disabled={loadingApplications}>{loadingApplications ? "Refreshing..." : "Refresh"}</Button>
               </CardHeader>
               <CardContent className="h-full overflow-auto space-y-3">
+                <div className="space-y-2 rounded-md border border-border bg-white p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">In Process: {applicationStatusStats.inProcess}</Badge>
+                    <Badge>Applied: {applicationStatusStats.applied}</Badge>
+                    <span className="text-xs text-muted-foreground">Total: {applicationStatusStats.total}</span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                    <div className="flex h-full w-full">
+                      <div
+                        className="h-full bg-slate-400"
+                        style={{ width: `${applicationStatusStats.inProcessPercent}%` }}
+                      />
+                      <div
+                        className="h-full bg-emerald-500"
+                        style={{ width: `${applicationStatusStats.appliedPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-white p-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label>Status Filter</Label>
+                    <Select
+                      value={applicationStatusFilter}
+                      onChange={(e) => setApplicationStatusFilter(e.target.value)}
+                    >
+                      <option value="all">All</option>
+                      <option value="in_process">In Process</option>
+                      <option value="applied">Applied</option>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Search Company Name</Label>
+                    <Input
+                      value={applicationCompanySearch}
+                      onChange={(e) => setApplicationCompanySearch(e.target.value)}
+                      placeholder="Type company name..."
+                    />
+                  </div>
+                </div>
                 {groupedApplications.length === 0 ? <p className="text-sm text-muted-foreground">No applications yet.</p> : null}
                 {groupedApplications.map(([company, apps]) => (
                   <details key={company} className="rounded-md border border-border bg-white p-2" open>
                     <summary className="cursor-pointer text-sm font-semibold">{company} ({apps.length})</summary>
                     <div className="mt-2 space-y-2">
                       {apps.map((app) => (
-                        <div key={app.id} className="flex flex-col gap-2 rounded-md border border-border p-2 md:flex-row md:items-start md:justify-between">
+                        <div
+                          key={app.id}
+                          className={`flex cursor-pointer flex-col gap-2 rounded-md border p-2 md:flex-row md:items-start md:justify-between ${
+                            currentApplicationId === app.id ? "border-primary bg-secondary/40" : "border-border"
+                          }`}
+                          onClick={() => loadApplication(app.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              loadApplication(app.id);
+                            }
+                          }}
+                        >
                           <div>
                             <div className="font-semibold">#{app.id} {app.jobTitle || "Untitled"}</div>
-                            <p className="text-xs text-muted-foreground">{app.role || "No role"} | {app.location || "No location"} | {app.date || "No date"}</p>
+                            <p className="text-xs font-medium text-muted-foreground">
+                              Company: {app.companyName || "No company"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {app.role || "No role"} | {app.location || "No location"} | {app.date || "No date"} | Applied: {app.appliedDate || "-"}
+                            </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
-                            <Button type="button" variant="secondary" onClick={() => loadApplication(app.id)}>Open/Edit</Button>
-                            <Button type="button" variant="destructive" onClick={() => deleteApplication(app.id)} disabled={deletingId === app.id}>{deletingId === app.id ? "Deleting..." : "Delete"}</Button>
+                            <Badge variant={app.status === "applied" ? "default" : "secondary"}>
+                              {app.status === "applied" ? "Applied" : "In Process"}
+                            </Badge>
+                            <Button
+                              type="button"
+                              variant={app.status === "applied" ? "secondary" : "default"}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (app.status !== "applied") {
+                                  markApplicationApplied(app.id);
+                                }
+                              }}
+                              disabled={app.status === "applied"}
+                            >
+                              {app.status === "applied" ? "Applied" : "Mark Applied"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                loadApplication(app.id);
+                              }}
+                            >
+                              Open/Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteApplication(app.id);
+                              }}
+                              disabled={deletingId === app.id}
+                            >
+                              {deletingId === app.id ? "Deleting..." : "Delete"}
+                            </Button>
                           </div>
                         </div>
                       ))}
@@ -1180,6 +1554,50 @@ export default function App() {
                       </div>
                     </div>
                     <div className="space-y-1">
+                      <Label>CV Template Path</Label>
+                      <div className="flex flex-wrap gap-2">
+                        <Input
+                          value={jobRoleForm.cvTemplate}
+                          onChange={(e) =>
+                            setJobRoleForm((prev) => ({
+                              ...prev,
+                              cvTemplate: e.target.value
+                            }))
+                          }
+                          placeholder="/Users/uranbileg/Documents/JOB/job_hunting_tool/templates/cv_data_engineer.docx"
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={onBrowseCvTemplate}
+                          disabled={uploadingCvTemplate}
+                        >
+                          {uploadingCvTemplate ? "Uploading..." : "Browse"}
+                        </Button>
+                        <input
+                          ref={cvTemplateInputRef}
+                          type="file"
+                          accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                          className="hidden"
+                          onChange={onCvTemplatePicked}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>CV Text</Label>
+                      <Textarea
+                        value={jobRoleForm.cvText}
+                        onChange={(e) =>
+                          setJobRoleForm((prev) => ({
+                            ...prev,
+                            cvText: e.target.value
+                          }))
+                        }
+                        rows={6}
+                        placeholder="Paste role-specific CV text here..."
+                      />
+                    </div>
+                    <div className="space-y-1">
                       <Label>Template File Text</Label>
                       <Textarea
                         value={roleTemplateText}
@@ -1229,6 +1647,9 @@ export default function App() {
                             <div className="font-medium">#{role.id} {role.name}</div>
                             <p className="text-xs text-muted-foreground break-all">
                               {role.coverLetterTemplate || "No template path"}
+                            </p>
+                            <p className="text-xs text-muted-foreground break-all">
+                              CV: {role.cvTemplate || "No CV template path"}
                             </p>
                           </div>
                           <div className="flex gap-2">
