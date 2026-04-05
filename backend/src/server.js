@@ -28,6 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const extractScriptPath = path.resolve(__dirname, "../scripts/extract_job_info.py");
 const exportScriptPath = path.resolve(__dirname, "../scripts/export_cover_letter.py");
+const exportResumeScriptPath = path.resolve(__dirname, "../scripts/export_resume.py");
 const updateDocxScriptPath = path.resolve(__dirname, "../scripts/update_docx_text.py");
 const pythonCmd =
   process.env.PYTHON_BIN ||
@@ -172,6 +173,47 @@ function runPythonExporter(payload) {
         return resolve(parsed);
       } catch {
         return reject(new Error("Python exporter returned invalid JSON"));
+      }
+    });
+
+    python.on("error", (error) => reject(error));
+    python.stdin.write(JSON.stringify(payload));
+    python.stdin.end();
+  });
+}
+
+function runPythonResumeExporter(payload) {
+  return new Promise((resolve, reject) => {
+    const python = spawn(pythonCmd, [exportResumeScriptPath], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    python.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    python.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    python.on("close", (code) => {
+      const raw = stdout.trim();
+      if (code !== 0) {
+        return reject(new Error(raw || stderr || "Python resume exporter failed"));
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.error) {
+          return reject(new Error(parsed.error));
+        }
+        return resolve(parsed);
+      } catch {
+        return reject(new Error("Python resume exporter returned invalid JSON"));
       }
     });
 
@@ -364,7 +406,14 @@ function parseApplicationId(rawId) {
 
 function parseApplicationStatus(rawStatus) {
   const status = String(rawStatus || "").trim().toLowerCase();
-  if (status === "in_process" || status === "applied") {
+  if (
+    status === "in_process" ||
+    status === "applied" ||
+    status === "rejected" ||
+    status === "assessment" ||
+    status === "interview" ||
+    status === "offer"
+  ) {
     return status;
   }
   return null;
@@ -391,7 +440,16 @@ async function ensureUserUrlsRow(userId = DEFAULT_USER_ID) {
 
 async function getUserUrlSetting(key, userId = DEFAULT_USER_ID) {
   if (!dbReady) return "";
-  if (!["template_root", "export_root", "word_export_root", "pdf_export_root"].includes(key)) {
+  if (
+    ![
+      "template_root",
+      "export_root",
+      "word_export_root",
+      "pdf_export_root",
+      "resume_default_root",
+      "resume_pdf_root"
+    ].includes(key)
+  ) {
     return "";
   }
   await ensureUserUrlsRow(userId);
@@ -403,7 +461,7 @@ async function getUserUrlSetting(key, userId = DEFAULT_USER_ID) {
 }
 
 async function setUserUrlSettings(
-  { templateRoot, exportRoot, wordExportRoot, pdfExportRoot },
+  { templateRoot, exportRoot, wordExportRoot, pdfExportRoot, resumeDefaultRoot, resumePdfRoot },
   userId = DEFAULT_USER_ID
 ) {
   if (!dbReady) return;
@@ -415,14 +473,18 @@ async function setUserUrlSettings(
         export_root = $2,
         word_export_root = $3,
         pdf_export_root = $4,
+        resume_default_root = $5,
+        resume_pdf_root = $6,
         updated_at = NOW()
-    WHERE user_id = $5
+    WHERE user_id = $7
   `,
     [
       String(templateRoot || ""),
       String(exportRoot || ""),
       String(wordExportRoot || ""),
       String(pdfExportRoot || ""),
+      String(resumeDefaultRoot || ""),
+      String(resumePdfRoot || ""),
       userId
     ]
   );
@@ -960,6 +1022,94 @@ async function generateImprovedParagraphs(payload) {
   };
 }
 
+function buildImproveResumePrompt(payload) {
+  const { companyName, role, jobTitle, responsibilities, qualifications, resumeSummary, resumeSkills } =
+    payload;
+  const jobs = Array.isArray(payload.resumeExperienceItems) ? payload.resumeExperienceItems : [];
+
+  return `Improve this resume content for a specific role.
+
+Company: ${companyName || ""}
+Role: ${role || ""}
+Job Title: ${jobTitle || ""}
+
+Target Responsibilities:
+${responsibilities || ""}
+
+Target Qualifications:
+${qualifications || ""}
+
+Current Summary:
+${resumeSummary || ""}
+
+Current Skills:
+${resumeSkills || ""}
+
+Current Jobs (JSON):
+${JSON.stringify(jobs)}
+
+Instructions:
+1) Return ONLY valid JSON with keys: summary, skills, jobs.
+2) summary must be plain text in this exact order:
+   - First section title: "Job Summary"
+   - Then 3-6 bullet lines with the most important skills/requirements they want (each bullet starts with "- ").
+   - Prioritize technical skill bullets when present in the posting, including software engineering/building & development work, machine learning/AI, Power BI/BI tools, data analytics, SQL/Python, and systems/integration skills.
+   - Blank line.
+   - Second section title: "What I Improved"
+   - Then 2-4 concise bullet lines describing what was improved (each bullet starts with "- ").
+3) skills must be grouped by role-focus headings, then bullets under each heading.
+   Format exactly like:
+   Software Engineer
+   - ...
+   - ...
+
+   ERP Business Analyst
+   - ...
+   - ...
+   Keep plain text only (no markdown fences).
+4) jobs: array up to 5 jobs. Keep each job shape:
+   { "title": "", "dateRange": "", "company": "", "details": "" }
+5) CRITICAL: Do NOT rewrite existing bullet wording. Keep selected current bullets verbatim.
+6) For each job details, select the most relevant 3-4 bullets from current details as-is.
+7) Add at most one NEW bullet only if needed for a key missing requirement from responsibilities+qualifications.
+8) In details, output bullet lines only, one per line, each prefixed with "- ".
+9) Preserve truthfulness and avoid inventing facts.`;
+}
+
+async function improveResumeContent(payload) {
+  const completion = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    temperature: 0.1,
+    messages: [
+      {
+        role: "system",
+        content: "You improve resume sections and return strict JSON only."
+      },
+      { role: "user", content: buildImproveResumePrompt(payload) }
+    ]
+  });
+
+  const raw = completion.choices?.[0]?.message?.content?.trim() || "";
+  const cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const parsed = JSON.parse(cleaned);
+
+  const jobs = Array.isArray(parsed.jobs) ? parsed.jobs.slice(0, 5) : [];
+  return {
+    summary: String(parsed.summary || ""),
+    skills: String(parsed.skills || ""),
+    jobs: jobs.map((job) => ({
+      title: String(job?.title || ""),
+      dateRange: String(job?.dateRange || ""),
+      company: String(job?.company || ""),
+      details: String(job?.details || "")
+    }))
+  };
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -1180,15 +1330,26 @@ app.patch("/api/applications/:id/status", async (req, res) => {
     }
     const status = parseApplicationStatus(req.body?.status);
     if (!status) {
-      return res.status(400).json({ error: "Invalid status. Use in_process or applied." });
+      return res.status(400).json({
+        error: "Invalid status. Use in_process, applied, rejected, assessment, interview, or offer."
+      });
     }
+
+    const prevResult = await dbPool.query("SELECT status FROM job_application WHERE id = $1 LIMIT 1", [id]);
+    if (prevResult.rowCount === 0) {
+      return res.status(404).json({ error: "Application not found." });
+    }
+    const fromStatus = String(prevResult.rows[0].status || "");
 
     const result = await dbPool.query(
       `
       UPDATE job_application
       SET
         status = $1,
-        applied_date = CASE WHEN $1 = 'applied' THEN TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') ELSE '' END,
+        applied_date = CASE
+          WHEN $1 = 'applied' THEN COALESCE(NULLIF(applied_date, ''), TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD'))
+          ELSE applied_date
+        END,
         updated_at = NOW()
       WHERE id = $2
       RETURNING applied_date, updated_at
@@ -1198,6 +1359,13 @@ app.patch("/api/applications/:id/status", async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: "Application not found." });
     }
+    await dbPool.query(
+      `
+      INSERT INTO application_state_log (application_id, from_status, to_status, changed_at)
+      VALUES ($1, $2, $3, NOW())
+    `,
+      [id, fromStatus, status]
+    );
     return res.json({
       saved: true,
       id,
@@ -1208,6 +1376,41 @@ app.patch("/api/applications/:id/status", async (req, res) => {
   } catch (error) {
     console.error("Update application status failed:", error);
     return res.status(500).json({ error: "Failed to update application status." });
+  }
+});
+
+app.get("/api/applications/:id/state-log", async (req, res) => {
+  try {
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+    const id = parseApplicationId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid application id." });
+    }
+    const result = await dbPool.query(
+      `
+      SELECT id, application_id, from_status, to_status, changed_at
+      FROM application_state_log
+      WHERE application_id = $1
+      ORDER BY changed_at DESC, id DESC
+    `,
+      [id]
+    );
+    return res.json({
+      logs: result.rows.map((row) => ({
+        id: row.id,
+        applicationId: row.application_id,
+        fromStatus: row.from_status || "",
+        toStatus: row.to_status || "",
+        changedAt: row.changed_at
+      }))
+    });
+  } catch (error) {
+    console.error("State log load failed:", error);
+    return res.status(500).json({ error: "Failed to load state log." });
   }
 });
 
@@ -1454,7 +1657,19 @@ app.get("/api/settings", async (_req, res) => {
       (await getUserUrlSetting("word_export_root", DEFAULT_USER_ID)) || exportRoot;
     const pdfExportRoot =
       (await getUserUrlSetting("pdf_export_root", DEFAULT_USER_ID)) || exportRoot;
-    return res.json({ userId: DEFAULT_USER_ID, templateRoot, exportRoot, wordExportRoot, pdfExportRoot });
+    const resumeDefaultRootRaw = await getUserUrlSetting("resume_default_root", DEFAULT_USER_ID);
+    const resumeDefaultRoot = resumeDefaultRootRaw || "";
+    const resumePdfRoot =
+      (await getUserUrlSetting("resume_pdf_root", DEFAULT_USER_ID)) || resumeDefaultRoot;
+    return res.json({
+      userId: DEFAULT_USER_ID,
+      templateRoot,
+      exportRoot,
+      wordExportRoot,
+      pdfExportRoot,
+      resumeDefaultRoot,
+      resumePdfRoot
+    });
   } catch (error) {
     return res.status(500).json({ error: "Failed to load settings." });
   }
@@ -1471,8 +1686,10 @@ app.put("/api/settings", async (req, res) => {
     const exportRoot = normalizeDirectory(req.body?.exportRoot);
     const wordExportRoot = normalizeDirectory(req.body?.wordExportRoot);
     const pdfExportRoot = normalizeDirectory(req.body?.pdfExportRoot);
+    const resumeDefaultRoot = normalizeDirectory(req.body?.resumeDefaultRoot);
+    const resumePdfRoot = normalizeDirectory(req.body?.resumePdfRoot);
     await setUserUrlSettings(
-      { templateRoot, exportRoot, wordExportRoot, pdfExportRoot },
+      { templateRoot, exportRoot, wordExportRoot, pdfExportRoot, resumeDefaultRoot, resumePdfRoot },
       DEFAULT_USER_ID
     );
     return res.json({
@@ -1481,7 +1698,9 @@ app.put("/api/settings", async (req, res) => {
       templateRoot,
       exportRoot,
       wordExportRoot,
-      pdfExportRoot
+      pdfExportRoot,
+      resumeDefaultRoot,
+      resumePdfRoot
     });
   } catch (error) {
     return res.status(500).json({ error: "Failed to save settings." });
@@ -1795,6 +2014,32 @@ app.post("/api/improve-paragraphs", async (req, res) => {
   }
 });
 
+app.post("/api/improve-resume", async (req, res) => {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        error: "OPENAI_API_KEY is missing. Add it to your environment before improving resume."
+      });
+    }
+
+    const requiredFields = ["responsibilities", "qualifications"];
+    const missing = requiredFields.filter((field) => !String(req.body?.[field] || "").trim());
+    if (missing.length > 0) {
+      return res.status(400).json({
+        error: `Missing required fields: ${missing.join(", ")}`
+      });
+    }
+
+    const improved = await improveResumeContent(req.body || {});
+    return res.json({ improved });
+  } catch (error) {
+    console.error("Resume improvement failed:", error);
+    return res.status(500).json({
+      error: "Failed to improve resume content."
+    });
+  }
+});
+
 app.post("/api/export-cover-letter", async (req, res) => {
   try {
     const requiredFields = [
@@ -1842,6 +2087,65 @@ app.post("/api/export-cover-letter", async (req, res) => {
       error:
         error.message ||
         "Failed to export cover letter. Ensure python-docx/docx2pdf dependencies are installed."
+    });
+  }
+});
+
+app.post("/api/export-resume", async (req, res) => {
+  try {
+    const roleName = String(req.body?.role || "").trim();
+    if (!roleName) {
+      return res.status(400).json({ error: "Missing required field: role" });
+    }
+    if (!dbReady) {
+      return res.status(503).json({
+        error: "PostgreSQL is not available. Start DB and restart backend."
+      });
+    }
+
+    const roleResult = await dbPool.query(
+      `
+      SELECT cv_template
+      FROM job_roles
+      WHERE user_id = $1 AND lower(name) = lower($2)
+      LIMIT 1
+    `,
+      [DEFAULT_USER_ID, roleName]
+    );
+    const resumeTemplatePath = String(roleResult.rows?.[0]?.cv_template || "").trim();
+    if (!resumeTemplatePath) {
+      return res.status(400).json({
+        error: `No cv template path set for role: ${roleName}`
+      });
+    }
+
+    const exportRootSetting = await getUserUrlSetting("export_root");
+    const resumeWordDir =
+      (await getUserUrlSetting("resume_default_root")) ||
+      exportRootSetting ||
+      path.resolve(__dirname, "../../..");
+    const resumePdfDir =
+      (await getUserUrlSetting("resume_pdf_root")) || resumeWordDir;
+
+    const result = await runPythonResumeExporter({
+      ...req.body,
+      templatePath: resumeTemplatePath,
+      outputDirWord: resumeWordDir,
+      outputDirPdf: resumePdfDir
+    });
+
+    return res.json({
+      templatePath: resumeTemplatePath,
+      resumeWordOutputDir: resumeWordDir,
+      resumePdfOutputDir: resumePdfDir,
+      ...result
+    });
+  } catch (error) {
+    console.error("Resume export failed:", error);
+    return res.status(500).json({
+      error:
+        error.message ||
+        "Failed to export resume. Ensure python-docx dependencies are installed."
     });
   }
 });

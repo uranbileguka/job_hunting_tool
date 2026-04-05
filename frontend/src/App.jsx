@@ -42,8 +42,75 @@ function createInitialForm() {
     paragraph5: "",
     responsibilities: "",
     qualifications: "",
+    resumeSummary: "",
+    resumeExperience: "",
+    resumeSkills: "",
+    coverLetterDocxPath: "",
+    coverLetterPdfPath: "",
+    resumeDocxPath: "",
+    resumePdfPath: "",
     status: "in_process"
   };
+}
+
+function createEmptyResumeJob() {
+  return {
+    title: "",
+    dateRange: "",
+    company: "",
+    details: ""
+  };
+}
+
+function toFixedFiveResumeJobs(items = []) {
+  const next = Array.from({ length: 5 }, (_, idx) => items[idx] || createEmptyResumeJob());
+  return next.map((item) => ({
+    title: String(item.title || ""),
+    dateRange: String(item.dateRange || ""),
+    company: String(item.company || ""),
+    details: String(item.details || "")
+  }));
+}
+
+function fileNameFromPath(filePath = "") {
+  const value = String(filePath || "").trim();
+  if (!value) return "";
+  const normalized = value.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || "";
+}
+
+function prettyStatus(status = "") {
+  const raw = String(status || "").trim().toLowerCase();
+  if (!raw) return "In Process";
+  return raw
+    .split("_")
+    .map((x) => x.charAt(0).toUpperCase() + x.slice(1))
+    .join(" ");
+}
+
+function readApplicationIdFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("applicationId");
+    if (!raw) return null;
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) return null;
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function readUiStateFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const menu = String(params.get("menu") || "").trim();
+    const page = String(params.get("page") || "").trim();
+    return { menu, page };
+  } catch {
+    return { menu: "", page: "" };
+  }
 }
 
 export default function App() {
@@ -55,6 +122,8 @@ export default function App() {
   const [templateRoot, setTemplateRoot] = useState("");
   const [wordExportRoot, setWordExportRoot] = useState("");
   const [pdfExportRoot, setPdfExportRoot] = useState("");
+  const [resumeDefaultRoot, setResumeDefaultRoot] = useState("");
+  const [resumePdfRoot, setResumePdfRoot] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [templateFiles, setTemplateFiles] = useState([]);
   const [uploadingTemplates, setUploadingTemplates] = useState(false);
@@ -95,9 +164,27 @@ export default function App() {
   const [loadingRecord, setLoadingRecord] = useState(false);
   const [loadingApplications, setLoadingApplications] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  const [applicationStatusFilter, setApplicationStatusFilter] = useState("all");
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState("in_process");
   const [applicationCompanySearch, setApplicationCompanySearch] = useState("");
+  const [applicationFormPage, setApplicationFormPage] = useState("det");
+  const [loadingResumeExperience, setLoadingResumeExperience] = useState(false);
+  const [resumeExperienceItems, setResumeExperienceItems] = useState(
+    toFixedFiveResumeJobs([])
+  );
+  const [stateLogs, setStateLogs] = useState([]);
+  const [loadingStateLogs, setLoadingStateLogs] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [error, setError] = useState("");
+  const initializedFromUrlRef = useRef(false);
+  const validMenus = useMemo(
+    () => new Set(["new", "applications", "templates", "master-cv", "job-roles"]),
+    []
+  );
+  const validPages = useMemo(
+    () => new Set(["det", "resume", "cover-letter", "exported", "state"]),
+    []
+  );
 
   const isDisabled = useMemo(
     () =>
@@ -163,9 +250,214 @@ export default function App() {
     [sortedJobRoles]
   );
 
+  const autoGrowTextarea = (textarea) => {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  };
+
+  const updateFieldAutoGrow = (event) => {
+    updateField(event);
+    autoGrowTextarea(event.target);
+  };
+
   const updateField = (event) => {
     const { name, value } = event.target;
     setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleMenuSelect = (menuKey) => {
+    setActiveMenu(menuKey);
+    setMobileMenuOpen(false);
+  };
+
+  const extractSectionByHeaders = (rawText, sectionHeaders = []) => {
+    const text = String(rawText || "").replace(/\r/g, "");
+    const rawLines = text.split("\n");
+    const lines = rawLines.map((raw) => ({ raw, trim: raw.trim() }));
+    const sectionHeaderRegex = new RegExp(`^(${sectionHeaders.join("|")})\\b`, "i");
+    const knownSectionHeaderRegex =
+      /^(education|skills|technical skills|core skills|key skills|projects|certifications|summary|profile|objective|publications|awards|volunteer|interests|activities|experience|work experience|professional experience|employment history)\b/i;
+
+    const startIdx = lines.findIndex((line) => sectionHeaderRegex.test(line.trim));
+    if (startIdx === -1) return "";
+
+    const collected = [];
+    for (let i = startIdx + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (knownSectionHeaderRegex.test(line.trim)) break;
+      collected.push(line.raw);
+    }
+    return collected.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  };
+
+  const extractExperienceSection = (rawText) => {
+    return extractSectionByHeaders(rawText, [
+      "experience",
+      "work experience",
+      "professional experience",
+      "employment history"
+    ]);
+  };
+
+  const extractSkillsSection = (rawText) => {
+    return extractSectionByHeaders(rawText, [
+      "skills",
+      "technical skills",
+      "core skills",
+      "key skills"
+    ]);
+  };
+
+  const parseExperienceEntries = (experienceText) => {
+    const sourceLines = String(experienceText || "").replace(/\r/g, "").split("\n");
+    const lines = sourceLines.map((raw) => ({ raw, trim: raw.trim() }));
+    if (!lines.some((line) => line.trim)) return [];
+
+    const month = "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+    const dateRangeRegex = new RegExp(
+      `${month}\\s+\\d{4}\\s*[–-]\\s*(Present|${month}\\s+\\d{4})$`,
+      "i"
+    );
+
+    const entries = [];
+    const looksLikeCompanyLocation = (value) => {
+      const line = String(value || "").trim();
+      if (!line) return false;
+      if (/^[-*•]\s*/.test(line)) return false;
+      if (/\d{4}/.test(line)) return false;
+      if (line.length > 120) return false;
+      if (/[.!?]$/.test(line)) return false;
+      if (line.split(/\s+/).length > 12) return false;
+      if (line.includes(",")) return true;
+      if (/\b(LLC|Inc|Corp|Ltd|University|College|Technologies|Company|Co\.|Group)\b/i.test(line)) {
+        return true;
+      }
+      return false;
+    };
+
+    const toBulletedLines = (rawLines) => {
+      return rawLines
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
+        .map((line) => {
+          const cleaned = line.replace(/^[-*•]\s*/, "").trim();
+          return `- ${cleaned}`;
+        })
+        .join("\n");
+    };
+
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim) {
+        i += 1;
+        continue;
+      }
+      const match = line.trim.match(dateRangeRegex);
+      if (!match) {
+        i += 1;
+        continue;
+      }
+
+      const dateRange = match[0].trim();
+      const title = line.trim.slice(0, line.trim.length - dateRange.length).trim();
+      let company = "";
+      const details = [];
+
+      if (i + 1 < lines.length && lines[i + 1].trim && !dateRangeRegex.test(lines[i + 1].trim)) {
+        company = lines[i + 1].raw.trim();
+        i += 1;
+      }
+
+      i += 1;
+      while (i < lines.length && !dateRangeRegex.test(lines[i].trim)) {
+        if (lines[i].trim) {
+          details.push(lines[i].raw);
+        }
+        i += 1;
+      }
+
+      // If company/location was captured inside details, move it to company field.
+      if (!company && details.length && looksLikeCompanyLocation(details[0])) {
+        company = String(details.shift() || "").trim();
+      }
+
+      entries.push({
+        title: title || "Untitled Role",
+        dateRange,
+        company,
+        details: toBulletedLines(details)
+      });
+    }
+
+    return entries.slice(0, 5);
+  };
+
+  const loadResumeExperienceFromRole = async () => {
+    const selectedRoleName = String(form.role || "").trim();
+    if (!selectedRoleName) {
+      setError("Select Role first to load CV experience.");
+      return;
+    }
+    const selectedRole = sortedJobRoles.find(
+      (role) => String(role.name || "").trim() === selectedRoleName
+    );
+    const cvTemplatePath = String(selectedRole?.cvTemplate || "").trim();
+    if (!cvTemplatePath) {
+      setError(`No CV Template Path found for role "${selectedRoleName}".`);
+      return;
+    }
+
+    setLoadingResumeExperience(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/template-file/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: cvTemplatePath })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load CV template.");
+
+      const text = String(data.text || "");
+      const experience = extractExperienceSection(text);
+      const skills = extractSkillsSection(text);
+      if (!experience && !skills) throw new Error("No EXPERIENCE or SKILLS section found in CV template.");
+
+      setForm((prev) => ({
+        ...prev,
+        resumeExperience: experience || prev.resumeExperience || "",
+        resumeSkills: skills || prev.resumeSkills || ""
+      }));
+      setResumeExperienceItems(toFixedFiveResumeJobs(parseExperienceEntries(experience)));
+      setFillInfo(`Resume EXPERIENCE loaded from ${cvTemplatePath}`);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingResumeExperience(false);
+    }
+  };
+
+  const loadAndSplitResume = async () => {
+    const selectedRoleName = String(form.role || "").trim();
+    const selectedRole = sortedJobRoles.find(
+      (role) => String(role.name || "").trim() === selectedRoleName
+    );
+    const cvTemplatePath = String(selectedRole?.cvTemplate || "").trim();
+
+    if (selectedRoleName && cvTemplatePath) {
+      await loadResumeExperienceFromRole();
+      return;
+    }
+
+    const parsed = parseExperienceEntries(form.resumeExperience || "");
+    if (!parsed.length) {
+      setError("No CV template path for selected role and no parseable EXPERIENCE text.");
+      return;
+    }
+    setResumeExperienceItems(toFixedFiveResumeJobs(parsed));
+    setFillInfo("Resume EXPERIENCE split into 5 job fields.");
   };
 
   const loadApplications = async () => {
@@ -204,6 +496,8 @@ export default function App() {
       setTemplateRoot(String(data.templateRoot || ""));
       setWordExportRoot(String(data.wordExportRoot || data.exportRoot || ""));
       setPdfExportRoot(String(data.pdfExportRoot || data.exportRoot || ""));
+      setResumeDefaultRoot(String(data.resumeDefaultRoot || ""));
+      setResumePdfRoot(String(data.resumePdfRoot || data.resumeDefaultRoot || ""));
     } catch (requestError) {
       setError(requestError.message);
     }
@@ -219,7 +513,9 @@ export default function App() {
         body: JSON.stringify({
           templateRoot,
           wordExportRoot,
-          pdfExportRoot
+          pdfExportRoot,
+          resumeDefaultRoot,
+          resumePdfRoot
         })
       });
       const data = await response.json();
@@ -227,6 +523,8 @@ export default function App() {
       setTemplateRoot(String(data.templateRoot || ""));
       setWordExportRoot(String(data.wordExportRoot || ""));
       setPdfExportRoot(String(data.pdfExportRoot || ""));
+      setResumeDefaultRoot(String(data.resumeDefaultRoot || ""));
+      setResumePdfRoot(String(data.resumePdfRoot || ""));
       setFillInfo("Template/Export settings saved.");
       await loadTemplates();
     } catch (requestError) {
@@ -246,8 +544,12 @@ export default function App() {
       if (!picked) return;
       if (target === "word") {
         setWordExportRoot(picked);
-      } else {
+      } else if (target === "pdf") {
         setPdfExportRoot(picked);
+      } else if (target === "resume-word") {
+        setResumeDefaultRoot(picked);
+      } else {
+        setResumePdfRoot(picked);
       }
     } catch (requestError) {
       setError(requestError.message);
@@ -675,9 +977,58 @@ export default function App() {
     loadJobRoles();
   }, []);
 
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (currentApplicationId) {
+      url.searchParams.set("applicationId", String(currentApplicationId));
+    } else {
+      url.searchParams.delete("applicationId");
+    }
+    url.searchParams.set("menu", activeMenu);
+    url.searchParams.set("page", applicationFormPage);
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [currentApplicationId, activeMenu, applicationFormPage]);
+
+  useEffect(() => {
+    if (activeMenu !== "new") return;
+    const nodes = document.querySelectorAll('textarea[data-autogrow="true"]');
+    nodes.forEach((node) => autoGrowTextarea(node));
+  }, [activeMenu, applicationFormPage, form]);
+
+  useEffect(() => {
+    if (activeMenu !== "new" || applicationFormPage !== "resume") return;
+    if (loadingResumeExperience) return;
+    if (String(form.resumeExperience || "").trim()) return;
+    if (!String(form.role || "").trim()) return;
+    const selectedRole = sortedJobRoles.find(
+      (role) => String(role.name || "").trim() === String(form.role || "").trim()
+    );
+    if (!String(selectedRole?.cvTemplate || "").trim()) return;
+    loadResumeExperienceFromRole();
+  }, [
+    activeMenu,
+    applicationFormPage,
+    form.resumeExperience,
+    form.role,
+    sortedJobRoles,
+    loadingResumeExperience
+  ]);
+
+  useEffect(() => {
+    if (activeMenu !== "new" || applicationFormPage !== "state") return;
+    if (!currentApplicationId) {
+      setStateLogs([]);
+      return;
+    }
+    loadStateLogs(currentApplicationId);
+  }, [activeMenu, applicationFormPage, currentApplicationId]);
+
   const startNewForm = () => {
     setForm(createInitialForm());
     setCurrentApplicationId(null);
+    setApplicationFormPage("det");
+    setResumeExperienceItems(toFixedFiveResumeJobs([]));
+    setStateLogs([]);
     setLetter("");
     setExportInfo("");
     setError("");
@@ -685,7 +1036,9 @@ export default function App() {
     setActiveMenu("new");
   };
 
-  const loadApplication = async (id) => {
+  const loadApplication = async (id, options = {}) => {
+    const keepPage = Boolean(options.keepPage);
+    const keepMenu = Boolean(options.keepMenu);
     setLoadingRecord(true);
     setError("");
     try {
@@ -696,17 +1049,34 @@ export default function App() {
         ...prev,
         ...(data.record || {}),
         status: String(data.record?.status || "in_process"),
-        appliedDate: String(data.record?.appliedDate || "")
+        appliedDate: String(data.record?.appliedDate || ""),
+        resumeExperience: "",
+        resumeSkills: ""
       }));
+      setResumeExperienceItems(toFixedFiveResumeJobs([]));
       setCurrentApplicationId(id);
-      setActiveMenu("new");
+      if (!keepPage) setApplicationFormPage("det");
+      if (!keepMenu) setActiveMenu("new");
       setFillInfo(`Loaded application #${id}.`);
+      await loadStateLogs(id);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
       setLoadingRecord(false);
     }
   };
+
+  useEffect(() => {
+    if (initializedFromUrlRef.current) return;
+    initializedFromUrlRef.current = true;
+    const { menu, page } = readUiStateFromUrl();
+    if (validMenus.has(menu)) setActiveMenu(menu);
+    if (validPages.has(page)) setApplicationFormPage(page);
+    const applicationIdFromUrl = readApplicationIdFromUrl();
+    if (applicationIdFromUrl) {
+      loadApplication(applicationIdFromUrl, { keepPage: true, keepMenu: true });
+    }
+  }, [validMenus, validPages]);
 
   const saveApplication = async () => {
     setSavingRecord(true);
@@ -772,6 +1142,7 @@ export default function App() {
       if (currentApplicationId === id) {
         setCurrentApplicationId(null);
         setForm(createInitialForm());
+        setStateLogs([]);
         setLetter("");
       }
       await loadApplications();
@@ -783,24 +1154,47 @@ export default function App() {
     }
   };
 
-  const markApplicationApplied = async (id) => {
+  const loadStateLogs = async (applicationId) => {
+    if (!applicationId) {
+      setStateLogs([]);
+      return;
+    }
+    setLoadingStateLogs(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/applications/${applicationId}/state-log`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load state logs.");
+      setStateLogs(Array.isArray(data.logs) ? data.logs : []);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingStateLogs(false);
+    }
+  };
+
+  const updateApplicationStatus = async (id, status) => {
+    if (!id) {
+      setError("Save the application first before changing status.");
+      return;
+    }
+    setChangingStatus(true);
     setError("");
     try {
       const response = await fetch(`${API_BASE_URL}/api/applications/${id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "applied" })
+        body: JSON.stringify({ status })
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to mark application as applied.");
+      if (!response.ok) throw new Error(data.error || "Failed to update application status.");
 
       setApplications((prev) =>
         prev.map((app) =>
           app.id === id
             ? {
                 ...app,
-                status: "applied",
-                appliedDate: String(data.appliedDate || getTodayLocalDate())
+                status: String(data.status || status),
+                appliedDate: String(data.appliedDate || app.appliedDate || "")
               }
             : app
         )
@@ -808,14 +1202,17 @@ export default function App() {
       if (currentApplicationId === id) {
         setForm((prev) => ({
           ...prev,
-          status: "applied",
-          appliedDate: String(data.appliedDate || getTodayLocalDate())
+          status: String(data.status || status),
+          appliedDate: String(data.appliedDate || prev.appliedDate || "")
         }));
       }
-      setFillInfo(`Application #${id} marked as applied.`);
+      setFillInfo(`Application #${id} status updated to ${prettyStatus(status)}.`);
+      await loadStateLogs(id);
       await loadApplications();
     } catch (requestError) {
       setError(requestError.message);
+    } finally {
+      setChangingStatus(false);
     }
   };
 
@@ -1099,6 +1496,39 @@ export default function App() {
     }
   };
 
+  const improveResumeFields = async () => {
+    setImproving(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/improve-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          resumeExperienceItems
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to improve resume.");
+
+      const improved = data.improved || {};
+      const nextJobs = toFixedFiveResumeJobs(Array.isArray(improved.jobs) ? improved.jobs : []);
+      setResumeExperienceItems(nextJobs);
+      const nextForm = {
+        ...form,
+        resumeSummary: String(improved.summary || form.resumeSummary || ""),
+        resumeSkills: String(improved.skills || form.resumeSkills || "")
+      };
+      setForm(nextForm);
+      await persistApplicationAfterAction(nextForm, "Done: resume improved.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setImproving(false);
+    }
+  };
+
   const exportCoverLetterFiles = async () => {
     setExporting(true);
     setError("");
@@ -1117,8 +1547,52 @@ export default function App() {
       const pdfPart = data.pdfCreated
         ? `PDF: ${data.pdfPath}`
         : `PDF not created${data.pdfError ? ` (${data.pdfError})` : ""}`;
-      setExportInfo(`DOCX: ${data.docxPath} | ${pdfPart}`);
-      await persistApplicationAfterAction(form, "Done: export completed.");
+      const nextForm = {
+        ...form,
+        coverLetterDocxPath: String(data.docxPath || ""),
+        coverLetterPdfPath: data.pdfCreated ? String(data.pdfPath || "") : ""
+      };
+      setForm(nextForm);
+      setApplicationFormPage("exported");
+      setExportInfo(`Cover Letter DOCX: ${data.docxPath} | ${pdfPart}`);
+      await persistApplicationAfterAction(nextForm, "Done: export completed.");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportResumeFiles = async () => {
+    setExporting(true);
+    setError("");
+    setExportInfo("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/export-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          resumeExperienceItems
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to export resume files.");
+
+      const pdfPart = data.pdfCreated
+        ? `PDF: ${data.pdfPath}`
+        : `PDF not created${data.pdfError ? ` (${data.pdfError})` : ""}`;
+      const nextForm = {
+        ...form,
+        resumeDocxPath: String(data.docxPath || ""),
+        resumePdfPath: data.pdfCreated ? String(data.pdfPath || "") : ""
+      };
+      setForm(nextForm);
+      setApplicationFormPage("exported");
+      setExportInfo(`Resume DOCX: ${data.docxPath} | ${pdfPart}`);
+      await persistApplicationAfterAction(nextForm, "Done: resume export completed.");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -1130,15 +1604,28 @@ export default function App() {
     <div className="h-full p-3">
       <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-[260px_1fr]">
         <Card className="h-fit lg:h-full">
-          <CardHeader>
-            <CardTitle>Menu</CardTitle>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle className="hidden lg:block">Menu</CardTitle>
+            <Button
+              type="button"
+              variant="secondary"
+              className="lg:hidden"
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              aria-label="Toggle menu"
+            >
+              <span className="inline-flex flex-col gap-1">
+                <span className="block h-0.5 w-4 bg-current" />
+                <span className="block h-0.5 w-4 bg-current" />
+                <span className="block h-0.5 w-4 bg-current" />
+              </span>
+            </Button>
           </CardHeader>
-          <CardContent className="space-y-2">
-            <Button variant={activeMenu === "new" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("new")}>1. New Form</Button>
-            <Button variant={activeMenu === "applications" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("applications")}>2. Applications ({applications.length})</Button>
-            <Button variant={activeMenu === "templates" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("templates")}>3. Templates</Button>
-            <Button variant={activeMenu === "master-cv" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("master-cv")}>4. Master CV</Button>
-            <Button variant={activeMenu === "job-roles" ? "default" : "secondary"} className="w-full justify-start" onClick={() => setActiveMenu("job-roles")}>5. Job Roles ({jobRoles.length})</Button>
+          <CardContent className={`${mobileMenuOpen ? "block" : "hidden"} space-y-2 lg:block`}>
+            <Button variant={activeMenu === "new" ? "default" : "secondary"} className="w-full justify-start" onClick={() => handleMenuSelect("new")}>1. New Form</Button>
+            <Button variant={activeMenu === "applications" ? "default" : "secondary"} className="w-full justify-start" onClick={() => handleMenuSelect("applications")}>2. Applications ({applications.length})</Button>
+            <Button variant={activeMenu === "templates" ? "default" : "secondary"} className="w-full justify-start" onClick={() => handleMenuSelect("templates")}>3. Templates</Button>
+            <Button variant={activeMenu === "master-cv" ? "default" : "secondary"} className="w-full justify-start" onClick={() => handleMenuSelect("master-cv")}>4. Master CV</Button>
+            <Button variant={activeMenu === "job-roles" ? "default" : "secondary"} className="w-full justify-start" onClick={() => handleMenuSelect("job-roles")}>5. Job Roles ({jobRoles.length})</Button>
           </CardContent>
         </Card>
 
@@ -1151,7 +1638,7 @@ export default function App() {
               <CardContent className="h-full overflow-auto pt-4">
                 <form onSubmit={generateCoverLetter} className="space-y-3">
                   <div className="text-sm font-medium text-muted-foreground">
-                    Form ID: {currentApplicationId ? `#${currentApplicationId}` : "New"}
+                    Form ID: {currentApplicationId ? `#${currentApplicationId}` : "New"} | Current State: {prettyStatus(form.status)}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" variant="secondary" onClick={startNewForm}>New</Button>
@@ -1163,16 +1650,66 @@ export default function App() {
                     >
                       {savingRecord ? "Saving..." : currentApplicationId ? `Update #${currentApplicationId}` : "Save New"}
                     </Button>
+                    <Button
+                      type="button"
+                      onClick={fillFieldsAndLoadParagraphs}
+                      disabled={
+                        autoFilling ||
+                        loading ||
+                        improving ||
+                        exporting ||
+                        savingRecord ||
+                        loadingRecord ||
+                        (!hasAnyJobLink && !String(form.webDescription || "").trim()) ||
+                        !form.role
+                      }
+                    >
+                      {autoFilling ? "Processing..." : "Fill from link"}
+                    </Button>
                     {currentApplicationId ? (
                       <Button type="button" variant="destructive" onClick={() => deleteApplication(currentApplicationId)} disabled={deletingId === currentApplicationId}>
-                        {deletingId === currentApplicationId ? "Deleting..." : "Delete Current"}
+                        {deletingId === currentApplicationId ? "Deleting..." : "Delete"}
                       </Button>
                     ) : null}
                     <Button
-                      type="submit"
-                      disabled={isDisabled || loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}
+                      type="button"
+                      variant="secondary"
+                      onClick={() => updateApplicationStatus(currentApplicationId, "applied")}
+                      disabled={!currentApplicationId || changingStatus}
                     >
-                      {loading ? "Generating..." : "Generate Cover Letter"}
+                      Applied
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => updateApplicationStatus(currentApplicationId, "rejected")}
+                      disabled={!currentApplicationId || changingStatus}
+                    >
+                      Rejected
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => updateApplicationStatus(currentApplicationId, "assessment")}
+                      disabled={!currentApplicationId || changingStatus}
+                    >
+                      Assessment
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => updateApplicationStatus(currentApplicationId, "interview")}
+                      disabled={!currentApplicationId || changingStatus}
+                    >
+                      Interview
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => updateApplicationStatus(currentApplicationId, "offer")}
+                      disabled={!currentApplicationId || changingStatus}
+                    >
+                      Offer
                     </Button>
                   </div>
 
@@ -1204,43 +1741,284 @@ export default function App() {
                   <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
-                      variant="secondary"
-                      onClick={fillFieldsAndLoadParagraphs}
-                      disabled={
-                        autoFilling ||
-                        loading ||
-                        improving ||
-                        exporting ||
-                        savingRecord ||
-                        loadingRecord ||
-                        (!hasAnyJobLink && !String(form.webDescription || "").trim()) ||
-                        !form.role
-                      }
+                      variant={applicationFormPage === "det" ? "default" : "secondary"}
+                      onClick={() => setApplicationFormPage("det")}
+                      className={applicationFormPage === "det" ? "bg-green-600 text-white hover:bg-green-700 border border-green-700 font-medium" : "bg-green-500 text-white hover:bg-green-600 border border-green-600 font-medium"}
                     >
-                      {autoFilling ? "Processing..." : "1) Fill Fields (Link/Web) + Load Paragraphs"}
+                      Det
                     </Button>
-                    <Button type="button" variant="secondary" onClick={generateImprovedParagraphs} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{improving ? "Improving..." : "Generate Improved Paragraphs"}</Button>
-                    <Button type="button" variant="secondary" onClick={exportCoverLetterFiles} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{exporting ? "Exporting..." : "Export DOCX + PDF"}</Button>
+                    <Button
+                      type="button"
+                      variant={applicationFormPage === "resume" ? "default" : "secondary"}
+                      onClick={() => setApplicationFormPage("resume")}
+                      className={applicationFormPage === "resume" ? "bg-green-600 text-white hover:bg-green-700 border border-green-700 font-medium" : "bg-green-500 text-white hover:bg-green-600 border border-green-600 font-medium"}
+                    >
+                      Resume
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={applicationFormPage === "cover-letter" ? "default" : "secondary"}
+                      onClick={() => setApplicationFormPage("cover-letter")}
+                      className={applicationFormPage === "cover-letter" ? "bg-green-600 text-white hover:bg-green-700 border border-green-700 font-medium" : "bg-green-500 text-white hover:bg-green-600 border border-green-600 font-medium"}
+                    >
+                      Cover letter
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={applicationFormPage === "exported" ? "default" : "secondary"}
+                      onClick={() => setApplicationFormPage("exported")}
+                      className={applicationFormPage === "exported" ? "bg-green-600 text-white hover:bg-green-700 border border-green-700 font-medium" : "bg-green-500 text-white hover:bg-green-600 border border-green-600 font-medium"}
+                    >
+                      Exported
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={applicationFormPage === "state" ? "default" : "secondary"}
+                      onClick={() => setApplicationFormPage("state")}
+                      className={applicationFormPage === "state" ? "bg-green-600 text-white hover:bg-green-700 border border-green-700 font-medium" : "bg-green-500 text-white hover:bg-green-600 border border-green-600 font-medium"}
+                    >
+                      State
+                    </Button>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-                    <div className="space-y-1 xl:col-span-2"><Label>Company Information*</Label><Textarea name="companyInformation" value={form.companyInformation} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1"><Label>Responsibilities*</Label><Textarea name="responsibilities" value={form.responsibilities} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1"><Label>Qualifications*</Label><Textarea name="qualifications" value={form.qualifications} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1 xl:col-span-2"><Label>Improvement Prompt (Optional)</Label><Textarea name="improvementPrompt" value={form.improvementPrompt} onChange={updateField} rows={2} /></div>
+                  {applicationFormPage === "det" ? (
+                    <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                      <div className="space-y-1 xl:col-span-2"><Label>Company Information*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="companyInformation" value={form.companyInformation} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                      <div className="space-y-1"><Label>Responsibilities*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="responsibilities" value={form.responsibilities} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                      <div className="space-y-1"><Label>Qualifications*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="qualifications" value={form.qualifications} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                    </div>
+                  ) : null}
 
-                    <div className="space-y-1"><Label>Improved Paragraph 1</Label><Textarea name="improvedParagraph1" value={form.improvedParagraph1} onChange={updateField} rows={2} /></div>
-                    <div className="space-y-1"><Label>Improved Paragraph 2</Label><Textarea name="improvedParagraph2" value={form.improvedParagraph2} onChange={updateField} rows={2} /></div>
-                    <div className="space-y-1"><Label>Improved Paragraph 3</Label><Textarea name="improvedParagraph3" value={form.improvedParagraph3} onChange={updateField} rows={2} /></div>
-                    <div className="space-y-1"><Label>Improved Paragraph 4</Label><Textarea name="improvedParagraph4" value={form.improvedParagraph4} onChange={updateField} rows={2} /></div>
-                    <div className="space-y-1 xl:col-span-2"><Label>Improved Paragraph 5</Label><Textarea name="improvedParagraph5" value={form.improvedParagraph5} onChange={updateField} rows={2} /></div>
+                  {applicationFormPage === "resume" ? (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={loadAndSplitResume}
+                          disabled={loadingResumeExperience}
+                        >
+                          {loadingResumeExperience ? "Loading..." : "Load"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={exportResumeFiles}
+                          disabled={
+                            loading ||
+                            extracting ||
+                            loadingTemplate ||
+                            improving ||
+                            exporting ||
+                            savingRecord ||
+                            loadingRecord
+                          }
+                        >
+                          {exporting ? "Exporting..." : "Export CV"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={improveResumeFields}
+                          disabled={
+                            loading ||
+                            extracting ||
+                            loadingTemplate ||
+                            improving ||
+                            exporting ||
+                            savingRecord ||
+                            loadingRecord
+                          }
+                        >
+                          {improving ? "Improving..." : "Improve Resume"}
+                        </Button>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Summary</Label>
+                        <Textarea
+                          data-autogrow="true"
+                          className="resize-none overflow-hidden"
+                          name="resumeSummary"
+                          value={form.resumeSummary || ""}
+                          onChange={updateFieldAutoGrow}
+                          rows={3}
+                          placeholder="Summary of what changed and what they are looking for..."
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Resume SKILLS</Label>
+                        <Textarea
+                          data-autogrow="true"
+                          className="resize-none overflow-hidden"
+                          name="resumeSkills"
+                          value={form.resumeSkills || ""}
+                          onChange={updateFieldAutoGrow}
+                          rows={4}
+                          placeholder="SKILLS section from selected role CV template will appear here..."
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                        {resumeExperienceItems.map((item, idx) => (
+                          <div key={`resume-job-${idx}`} className="space-y-1">
+                            <Label>{`Job ${idx + 1}`}</Label>
+                            <Input
+                              value={item.title}
+                              onChange={(e) =>
+                                setResumeExperienceItems((prev) =>
+                                  prev.map((entry, entryIdx) =>
+                                    entryIdx === idx ? { ...entry, title: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              placeholder="Job Title"
+                            />
+                            <Input
+                              value={item.dateRange}
+                              onChange={(e) =>
+                                setResumeExperienceItems((prev) =>
+                                  prev.map((entry, entryIdx) =>
+                                    entryIdx === idx ? { ...entry, dateRange: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              placeholder="Date Range"
+                            />
+                            <Input
+                              value={item.company}
+                              onChange={(e) =>
+                                setResumeExperienceItems((prev) =>
+                                  prev.map((entry, entryIdx) =>
+                                    entryIdx === idx ? { ...entry, company: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              placeholder="Company, Location"
+                            />
+                            <Textarea
+                              data-autogrow="true"
+                              className="resize-none overflow-hidden"
+                              value={item.details}
+                              onChange={(e) =>
+                                setResumeExperienceItems((prev) =>
+                                  prev.map((entry, entryIdx) =>
+                                    entryIdx === idx ? { ...entry, details: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              rows={6}
+                              placeholder="Responsibilities / achievements..."
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Resume EXPERIENCE</Label>
+                        <Textarea
+                          data-autogrow="true"
+                          className="resize-none overflow-hidden"
+                          name="resumeExperience"
+                          value={form.resumeExperience || ""}
+                          onChange={updateFieldAutoGrow}
+                          rows={8}
+                          placeholder="EXPERIENCE section from selected role CV template will appear here..."
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
-                    <div className="space-y-1"><Label>Template Paragraph 1*</Label><Textarea name="paragraph1" value={form.paragraph1} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1"><Label>Template Paragraph 2*</Label><Textarea name="paragraph2" value={form.paragraph2} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1"><Label>Template Paragraph 3*</Label><Textarea name="paragraph3" value={form.paragraph3} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1"><Label>Template Paragraph 4*</Label><Textarea name="paragraph4" value={form.paragraph4} onChange={updateField} rows={2} required /></div>
-                    <div className="space-y-1 xl:col-span-2"><Label>Template Paragraph 5*</Label><Textarea name="paragraph5" value={form.paragraph5} onChange={updateField} rows={2} required /></div>
-                  </div>
+                  {applicationFormPage === "cover-letter" ? (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" variant="secondary" onClick={generateImprovedParagraphs} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{improving ? "Improving..." : "Generate Improved Paragraphs"}</Button>
+                        <Button type="button" variant="secondary" onClick={exportCoverLetterFiles} disabled={loading || extracting || loadingTemplate || improving || exporting || savingRecord || loadingRecord}>{exporting ? "Exporting..." : "Export cover letter"}</Button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                        <div className="space-y-1 xl:col-span-2"><Label>Improvement Prompt (Optional)</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvementPrompt" value={form.improvementPrompt} onChange={updateFieldAutoGrow} rows={2} /></div>
+
+                        <div className="space-y-1"><Label>Improved Paragraph 1</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvedParagraph1" value={form.improvedParagraph1} onChange={updateFieldAutoGrow} rows={2} /></div>
+                        <div className="space-y-1"><Label>Improved Paragraph 2</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvedParagraph2" value={form.improvedParagraph2} onChange={updateFieldAutoGrow} rows={2} /></div>
+                        <div className="space-y-1"><Label>Improved Paragraph 3</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvedParagraph3" value={form.improvedParagraph3} onChange={updateFieldAutoGrow} rows={2} /></div>
+                        <div className="space-y-1"><Label>Improved Paragraph 4</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvedParagraph4" value={form.improvedParagraph4} onChange={updateFieldAutoGrow} rows={2} /></div>
+                        <div className="space-y-1 xl:col-span-2"><Label>Improved Paragraph 5</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="improvedParagraph5" value={form.improvedParagraph5} onChange={updateFieldAutoGrow} rows={2} /></div>
+
+                        <div className="space-y-1"><Label>Template Paragraph 1*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="paragraph1" value={form.paragraph1} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                        <div className="space-y-1"><Label>Template Paragraph 2*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="paragraph2" value={form.paragraph2} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                        <div className="space-y-1"><Label>Template Paragraph 3*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="paragraph3" value={form.paragraph3} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                        <div className="space-y-1"><Label>Template Paragraph 4*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="paragraph4" value={form.paragraph4} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                        <div className="space-y-1 xl:col-span-2"><Label>Template Paragraph 5*</Label><Textarea data-autogrow="true" className="resize-none overflow-hidden" name="paragraph5" value={form.paragraph5} onChange={updateFieldAutoGrow} rows={2} required /></div>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {applicationFormPage === "exported" ? (
+                    <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label>Resume Word Export Path</Label>
+                        <Input value={form.resumeDocxPath || ""} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Resume PDF Export Path</Label>
+                        <Input value={form.resumePdfPath || ""} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Cover Letter Word Export Path</Label>
+                        <Input value={form.coverLetterDocxPath || ""} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Cover Letter PDF Export Path</Label>
+                        <Input value={form.coverLetterPdfPath || ""} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Resume Word File Name</Label>
+                        <Input className="bg-sky-50" value={fileNameFromPath(form.resumeDocxPath)} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Resume PDF File Name</Label>
+                        <Input value={fileNameFromPath(form.resumePdfPath)} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Cover Letter Word File Name</Label>
+                        <Input className="bg-sky-50" value={fileNameFromPath(form.coverLetterDocxPath)} readOnly />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Cover Letter PDF File Name</Label>
+                        <Input value={fileNameFromPath(form.coverLetterPdfPath)} readOnly />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {applicationFormPage === "state" ? (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={form.status === "applied" ? "default" : "secondary"}>
+                          Current: {prettyStatus(form.status)}
+                        </Badge>
+                        <Button type="button" variant="secondary" onClick={() => loadStateLogs(currentApplicationId)} disabled={!currentApplicationId || loadingStateLogs}>
+                          {loadingStateLogs ? "Refreshing..." : "Refresh Log"}
+                        </Button>
+                      </div>
+                      <div className="space-y-2 rounded-md border border-border bg-white p-3">
+                        <Label>State Change Log</Label>
+                        {stateLogs.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No state changes yet.</p>
+                        ) : (
+                          <div className="space-y-1">
+                            {stateLogs.map((log) => (
+                              <div key={log.id} className="rounded border border-border p-2 text-sm">
+                                <div className="font-medium">
+                                  {prettyStatus(log.fromStatus)} → {prettyStatus(log.toStatus)}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {log.changedAt ? new Date(log.changedAt).toLocaleString() : ""}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
 
                 </form>
               </CardContent>
@@ -1283,6 +2061,10 @@ export default function App() {
                       <option value="all">All</option>
                       <option value="in_process">In Process</option>
                       <option value="applied">Applied</option>
+                      <option value="assessment">Assessment</option>
+                      <option value="interview">Interview</option>
+                      <option value="offer">Offer</option>
+                      <option value="rejected">Rejected</option>
                     </Select>
                   </div>
                   <div className="space-y-1">
@@ -1326,18 +2108,16 @@ export default function App() {
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <Badge variant={app.status === "applied" ? "default" : "secondary"}>
-                              {app.status === "applied" ? "Applied" : "In Process"}
+                              {prettyStatus(app.status)}
                             </Badge>
                             <Button
                               type="button"
                               variant={app.status === "applied" ? "secondary" : "default"}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (app.status !== "applied") {
-                                  markApplicationApplied(app.id);
-                                }
+                                updateApplicationStatus(app.id, "applied");
                               }}
-                              disabled={app.status === "applied"}
+                              disabled={app.status === "applied" || changingStatus}
                             >
                               {app.status === "applied" ? "Applied" : "Mark Applied"}
                             </Button>
@@ -1380,7 +2160,7 @@ export default function App() {
               </CardHeader>
               <CardContent className="h-full overflow-auto space-y-2">
                 <p className="text-sm text-muted-foreground">Set default export folders for generated Word and PDF files.</p>
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                   <div className="space-y-1">
                     <Label>Default Export Folder (Word)</Label>
                     <div className="flex flex-wrap gap-2">
@@ -1410,6 +2190,40 @@ export default function App() {
                         type="button"
                         variant="secondary"
                         onClick={() => browseExportDirectory("pdf")}
+                      >
+                        Browse
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Default Resume Folder (Word)</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Input
+                        value={resumeDefaultRoot}
+                        onChange={(e) => setResumeDefaultRoot(e.target.value)}
+                        placeholder="/Users/uranbileg/Documents/JOB/resume"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => browseExportDirectory("resume-word")}
+                      >
+                        Browse
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Default Resume Folder (PDF)</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Input
+                        value={resumePdfRoot}
+                        onChange={(e) => setResumePdfRoot(e.target.value)}
+                        placeholder="/Users/uranbileg/Documents/JOB/resume/pdf"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => browseExportDirectory("resume-pdf")}
                       >
                         Browse
                       </Button>

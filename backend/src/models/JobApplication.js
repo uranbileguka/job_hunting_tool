@@ -1,5 +1,12 @@
 export class JobApplication {
-  static VALID_STATUSES = new Set(["in_process", "applied"]);
+  static VALID_STATUSES = new Set([
+    "in_process",
+    "applied",
+    "rejected",
+    "assessment",
+    "interview",
+    "offer"
+  ]);
 
   static fieldMap = [
     ["role", "role"],
@@ -12,6 +19,7 @@ export class JobApplication {
     ["companyName", "company_name"],
     ["jobTitle", "job_title"],
     ["location", "location"],
+    ["appliedDate", "applied_date"],
     ["webDescription", "web_description"],
     ["companyInformation", "company_information"],
     ["improvementPrompt", "improvement_prompt"],
@@ -27,6 +35,11 @@ export class JobApplication {
     ["paragraph5", "paragraph_5"],
     ["responsibilities", "responsibilities"],
     ["qualifications", "qualifications"],
+    ["resumeSummary", "resume_summary"],
+    ["coverLetterDocxPath", "cover_letter_docx_path"],
+    ["coverLetterPdfPath", "cover_letter_pdf_path"],
+    ["resumeDocxPath", "resume_docx_path"],
+    ["resumePdfPath", "resume_pdf_path"],
     ["status", "status"]
   ];
 
