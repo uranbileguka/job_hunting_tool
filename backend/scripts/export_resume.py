@@ -62,8 +62,9 @@ def main() -> int:
     file_name = f"Uranbileg_resume_{company_clean}_{job_title_clean}.docx"
     save_path = output_dir_word / file_name
 
-    # Export as-is: copy template without changing content/format.
-    shutil.copy2(str(template_path), str(save_path))
+    # Export as-is without preserving the template's modified timestamp.
+    shutil.copyfile(str(template_path), str(save_path))
+    shutil.copymode(str(template_path), str(save_path))
 
     pdf_path = (output_dir_pdf / file_name).with_suffix(".pdf")
     pdf_created = False

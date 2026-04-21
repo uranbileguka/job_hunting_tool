@@ -2026,54 +2026,55 @@ export default function App() {
           ) : null}
 
           {activeMenu === "applications" ? (
-            <Card className="min-h-0">
-              <CardHeader className="flex-row items-center justify-between">
+            <Card className="flex min-h-0 flex-col">
+              <CardHeader>
                 <CardTitle>Applications</CardTitle>
-                <Button type="button" variant="secondary" onClick={loadApplications} disabled={loadingApplications}>{loadingApplications ? "Refreshing..." : "Refresh"}</Button>
               </CardHeader>
-              <CardContent className="h-full overflow-auto space-y-3">
-                <div className="space-y-2 rounded-md border border-border bg-white p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">In Process: {applicationStatusStats.inProcess}</Badge>
-                    <Badge>Applied: {applicationStatusStats.applied}</Badge>
-                    <span className="text-xs text-muted-foreground">Total: {applicationStatusStats.total}</span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                    <div className="flex h-full w-full">
-                      <div
-                        className="h-full bg-slate-400"
-                        style={{ width: `${applicationStatusStats.inProcessPercent}%` }}
-                      />
-                      <div
-                        className="h-full bg-emerald-500"
-                        style={{ width: `${applicationStatusStats.appliedPercent}%` }}
-                      />
+              <CardContent className="min-h-0 flex-1 overflow-auto space-y-3">
+                <div className="sticky top-0 z-20 space-y-3 bg-card pb-2">
+                  <div className="space-y-2 rounded-md border border-border bg-white p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">In Process: {applicationStatusStats.inProcess}</Badge>
+                      <Badge>Applied: {applicationStatusStats.applied}</Badge>
+                      <span className="text-xs text-muted-foreground">Total: {applicationStatusStats.total}</span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                      <div className="flex h-full w-full">
+                        <div
+                          className="h-full bg-slate-400"
+                          style={{ width: `${applicationStatusStats.inProcessPercent}%` }}
+                        />
+                        <div
+                          className="h-full bg-emerald-500"
+                          style={{ width: `${applicationStatusStats.appliedPercent}%` }}
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-white p-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label>Status Filter</Label>
-                    <Select
-                      value={applicationStatusFilter}
-                      onChange={(e) => setApplicationStatusFilter(e.target.value)}
-                    >
-                      <option value="all">All</option>
-                      <option value="in_process">In Process</option>
-                      <option value="applied">Applied</option>
-                      <option value="assessment">Assessment</option>
-                      <option value="interview">Interview</option>
-                      <option value="offer">Offer</option>
-                      <option value="rejected">Rejected</option>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Search Company Name</Label>
-                    <Input
-                      value={applicationCompanySearch}
-                      onChange={(e) => setApplicationCompanySearch(e.target.value)}
-                      placeholder="Type company name..."
-                    />
+                  <div className="grid grid-cols-1 gap-2 rounded-md border border-border bg-white p-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>Status Filter</Label>
+                      <Select
+                        value={applicationStatusFilter}
+                        onChange={(e) => setApplicationStatusFilter(e.target.value)}
+                      >
+                        <option value="all">All</option>
+                        <option value="in_process">In Process</option>
+                        <option value="applied">Applied</option>
+                        <option value="assessment">Assessment</option>
+                        <option value="interview">Interview</option>
+                        <option value="offer">Offer</option>
+                        <option value="rejected">Rejected</option>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Search Company Name</Label>
+                      <Input
+                        value={applicationCompanySearch}
+                        onChange={(e) => setApplicationCompanySearch(e.target.value)}
+                        placeholder="Type company name..."
+                      />
+                    </div>
                   </div>
                 </div>
                 {groupedApplications.length === 0 ? <p className="text-sm text-muted-foreground">No applications yet.</p> : null}
